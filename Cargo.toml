@@ -1,0 +1,17 @@
+[workspace]
+members = ["kineplex-core", "kineplex-net", "kineplex-node"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "AGPL-3.0-only"
+authors = ["Gemirson dos Santos Silva & Engineering Team"]
+repository = "https://github.com/gemirson/kineplex"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }

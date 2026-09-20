@@ -1,0 +1,17 @@
+[package]
+name = "kineplex-node"
+description = "KinePlex distributed node executable"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap = { version = "=4.4.18", default-features = false, features = ["derive", "error-context", "help", "std", "usage"] }
+kineplex-core = { path = "../kineplex-core" }
+kineplex-net = { path = "../kineplex-net" }
+
+[lints]
+workspace = true
