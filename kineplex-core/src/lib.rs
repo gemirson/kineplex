@@ -1,5 +1,7 @@
 //! Core configuration and domain types for KinePlex.
 
+pub mod observability;
+
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
@@ -72,13 +74,22 @@ impl Error for NodeConfigInitError {}
 pub fn initialize_node_config(
     config: NodeConfig,
 ) -> Result<&'static NodeConfig, NodeConfigInitError> {
-    NODE_CONFIG
-        .set(config)
-        .map_err(|_| NodeConfigInitError::AlreadyInitialized)?;
+    NODE_CONFIG.set(config).map_err(|_| {
+        tracing::warn!("node configuration initialization was attempted more than once");
+        NodeConfigInitError::AlreadyInitialized
+    })?;
 
-    NODE_CONFIG
+    let config = NODE_CONFIG
         .get()
-        .ok_or(NodeConfigInitError::UnavailableAfterInitialization)
+        .ok_or(NodeConfigInitError::UnavailableAfterInitialization)?;
+
+    tracing::debug!(
+        bind_addr = %config.bind_addr(),
+        seed_count = config.seeds.len(),
+        "node configuration initialized"
+    );
+
+    Ok(config)
 }
 
 /// Returns the immutable process-wide configuration when boot initialization has completed.

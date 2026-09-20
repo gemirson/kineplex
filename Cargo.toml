@@ -10,8 +10,18 @@ license = "AGPL-3.0-only"
 authors = ["Gemirson dos Santos Silva & Engineering Team"]
 repository = "https://github.com/gemirson/kineplex"
 
+[workspace.dependencies]
+serde_json = "=1.0.145"
+time = "=0.3.36"
+tracing = "=0.1.41"
+tracing-appender = { version = "=0.2.3", default-features = false }
+tracing-subscriber = { version = "=0.3.19", default-features = false, features = ["env-filter", "fmt", "json"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+print_stderr = "deny"
+print_stdout = "deny"

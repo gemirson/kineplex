@@ -12,5 +12,8 @@ use std::net::{AddrParseError, SocketAddr};
 /// Returns [`AddrParseError`] when `value` is not an IP literal followed by a valid
 /// `u16` port.
 pub fn parse_socket_addr(value: &str) -> Result<SocketAddr, AddrParseError> {
-    value.parse()
+    value.parse().map_err(|error| {
+        tracing::debug!("seed socket address validation failed");
+        error
+    })
 }

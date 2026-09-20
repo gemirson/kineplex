@@ -74,7 +74,10 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    Cli::try_parse_from(arguments).map(Into::into)
+    Cli::try_parse_from(arguments).map(|cli| {
+        tracing::trace!("command-line configuration parsed");
+        cli.into()
+    })
 }
 
 #[cfg(test)]
