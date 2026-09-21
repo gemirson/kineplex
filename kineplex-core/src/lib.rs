@@ -17,6 +17,8 @@ pub struct NodeConfig {
     pub bind_ip: IpAddr,
     /// UDP port on which the node accepts traffic.
     pub port: u16,
+    /// Reachable interface address advertised to peers, if explicitly configured.
+    pub advertise_ip: Option<IpAddr>,
     /// Peer addresses contacted while bootstrapping cluster membership.
     pub seeds: Vec<SocketAddr>,
 }
@@ -28,8 +30,27 @@ impl NodeConfig {
         Self {
             bind_ip,
             port,
+            advertise_ip: None,
             seeds,
         }
+    }
+
+    /// Sets the reachable interface address announced to remote peers.
+    #[must_use]
+    pub const fn with_advertise_ip(mut self, advertise_ip: Option<IpAddr>) -> Self {
+        self.advertise_ip = advertise_ip;
+        self
+    }
+
+    /// Returns the reachable node endpoint, when one can be determined safely.
+    ///
+    /// An explicit advertise IP takes precedence. A concrete bind IP is otherwise
+    /// usable, while an unspecified bind such as `0.0.0.0` requires explicit input.
+    #[must_use]
+    pub fn advertise_addr(&self) -> Option<SocketAddr> {
+        self.advertise_ip
+            .or_else(|| (!self.bind_ip.is_unspecified()).then_some(self.bind_ip))
+            .map(|ip| SocketAddr::new(ip, self.port))
     }
 
     /// Returns the complete socket address on which the node should bind.
@@ -96,4 +117,33 @@ pub fn initialize_node_config(
 #[must_use]
 pub fn node_config() -> Option<&'static NodeConfig> {
     NODE_CONFIG.get()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use super::NodeConfig;
+
+    #[test]
+    fn concrete_bind_address_is_advertised_by_default() {
+        let config = NodeConfig::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000, Vec::new());
+
+        assert_eq!(
+            config.advertise_addr(),
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 8000)))
+        );
+    }
+
+    #[test]
+    fn unspecified_bind_requires_explicit_advertise_address() {
+        let config = NodeConfig::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8000, Vec::new());
+        assert_eq!(config.advertise_addr(), None);
+
+        let advertised = config.with_advertise_ip(Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert_eq!(
+            advertised.advertise_addr(),
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 8000)))
+        );
+    }
 }

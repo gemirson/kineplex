@@ -2,10 +2,10 @@
 
 use std::ffi::OsString;
 use std::net::{IpAddr, SocketAddr};
-use std::num::ParseIntError;
 
 use clap::Parser;
 use kineplex_core::{NodeConfig, DEFAULT_NODE_PORT};
+use kineplex_net::gossip::gossip_addr;
 use kineplex_net::parse_socket_addr;
 
 #[derive(Debug, Parser)]
@@ -22,7 +22,7 @@ struct Cli {
         long,
         default_value_t = DEFAULT_NODE_PORT,
         value_name = "PORT",
-        value_parser = parse_port
+        value_parser = parse_node_port
     )]
     port: u16,
 
@@ -30,23 +30,43 @@ struct Cli {
     #[arg(long, default_value = "0.0.0.0", value_name = "IP")]
     bind_ip: IpAddr,
 
-    /// Comma-separated IPv4/IPv6 socket addresses used to join the P2P mesh.
+    /// Reachable IPv4 or IPv6 address advertised to Gossip peers.
+    ///
+    /// Required when `--bind-ip` is unspecified (`0.0.0.0` or `::`).
+    #[arg(long, value_name = "IP")]
+    advertise_ip: Option<IpAddr>,
+
+    /// Comma-separated IPv4/IPv6 node addresses used to join the P2P mesh.
     #[arg(
         long,
         value_delimiter = ',',
         value_name = "IP:PORT",
-        value_parser = parse_socket_addr
+        value_parser = parse_seed
     )]
     seed: Vec<SocketAddr>,
 }
 
-fn parse_port(value: &str) -> Result<u16, ParseIntError> {
-    value.parse()
+fn parse_node_port(value: &str) -> Result<u16, String> {
+    let port = value.parse::<u16>().map_err(|error| error.to_string())?;
+    validate_adjacent_gossip_port(SocketAddr::from(([0, 0, 0, 0], port)))?;
+    Ok(port)
+}
+
+fn parse_seed(value: &str) -> Result<SocketAddr, String> {
+    let seed = parse_socket_addr(value).map_err(|error| error.to_string())?;
+    validate_adjacent_gossip_port(seed)?;
+    Ok(seed)
+}
+
+fn validate_adjacent_gossip_port(node_addr: SocketAddr) -> Result<(), String> {
+    gossip_addr(node_addr)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 impl From<Cli> for NodeConfig {
     fn from(cli: Cli) -> Self {
-        Self::new(cli.bind_ip, cli.port, cli.seed)
+        Self::new(cli.bind_ip, cli.port, cli.seed).with_advertise_ip(cli.advertise_ip)
     }
 }
 
@@ -95,6 +115,7 @@ mod tests {
 
         assert_eq!(config.port, DEFAULT_NODE_PORT);
         assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(config.advertise_ip, None);
         assert!(config.seeds.is_empty());
     }
 
@@ -177,5 +198,30 @@ mod tests {
         assert!(error
             .to_string()
             .contains("number too large to fit in target type"));
+    }
+
+    #[test]
+    fn parses_advertise_ip() {
+        let config = parse_from(["kineplex-node", "--advertise-ip", "192.168.1.20"])
+            .expect("a valid advertise address must parse");
+
+        assert_eq!(
+            config.advertise_ip,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)))
+        );
+    }
+
+    #[test]
+    fn rejects_ports_without_adjacent_gossip_capacity() {
+        for arguments in [
+            ["kineplex-node", "--port", "65535"],
+            ["kineplex-node", "--seed", "127.0.0.1:65535"],
+        ] {
+            let error = parse_from(arguments)
+                .expect_err("port 65535 cannot reserve an adjacent Gossip port");
+
+            assert_eq!(error.kind(), ErrorKind::ValueValidation);
+            assert!(error.to_string().contains("cannot reserve Gossip port +1"));
+        }
     }
 }

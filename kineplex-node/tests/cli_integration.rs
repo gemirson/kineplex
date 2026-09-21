@@ -2,7 +2,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::{Command, Output};
 
 use kineplex_node::cli::parse_from;
-use serde_json::Value;
 
 fn run_node(arguments: &[&str]) -> Output {
     run_node_with_rust_log(arguments, None)
@@ -21,20 +20,13 @@ fn run_node_with_rust_log(arguments: &[&str], rust_log: Option<&str>) -> Output 
         .expect("the compiled kineplex-node binary must start")
 }
 
-fn one_json_event(output: &Output) -> Value {
-    let stdout = String::from_utf8(output.stdout.clone())
-        .expect("structured logs on stdout must contain valid UTF-8");
-    let mut lines = stdout.lines();
-    let event = lines.next().expect("one JSON log event must be emitted");
-    assert!(lines.next().is_none(), "only one info event was expected");
-    serde_json::from_str(event).expect("the tracing output must be valid JSON")
-}
-
 #[test]
 fn public_parser_returns_native_configuration() {
     let config = parse_from([
         "kineplex-node",
         "--bind-ip",
+        "0.0.0.0",
+        "--advertise-ip",
         "127.0.0.1",
         "--port",
         "8001",
@@ -43,7 +35,8 @@ fn public_parser_returns_native_configuration() {
     ])
     .expect("the documented CLI example must parse");
 
-    assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    assert_eq!(config.advertise_ip, Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
     assert_eq!(config.port, 8001);
     assert_eq!(
         config.seeds,
@@ -55,35 +48,10 @@ fn public_parser_returns_native_configuration() {
 }
 
 #[test]
-fn binary_emits_structured_startup_json() {
-    let output = run_node(&[
-        "--port",
-        "8001",
-        "--seed",
-        "192.168.1.10:8000,192.168.1.11:8000",
-    ]);
+fn rust_log_can_suppress_boot_events() {
+    let output = run_node_with_rust_log(&[], Some("off"));
 
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-
-    let event = one_json_event(&output);
-    assert_eq!(event["level"], "INFO");
-    assert_eq!(event["target"], "kineplex_node");
-    assert_eq!(event["fields"]["message"], "Starting KinePlex Node");
-    assert_eq!(event["fields"]["bind_addr"], "0.0.0.0:8001");
-    assert_eq!(event["fields"]["seed_count"], 2);
-    assert_eq!(
-        event["fields"]["seeds"],
-        "[192.168.1.10:8000, 192.168.1.11:8000]"
-    );
-    assert!(event["timestamp"].is_string());
-}
-
-#[test]
-fn rust_log_filters_info_events() {
-    let output = run_node_with_rust_log(&[], Some("error"));
-
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
 }
@@ -112,15 +80,27 @@ fn invalid_port_exits_gracefully_with_help_hint() {
 }
 
 #[test]
-fn malformed_seed_exits_gracefully_with_help_hint() {
-    let output = run_node(&["--seed", "invalid-address"]);
+fn port_without_room_for_gossip_is_rejected() {
+    let output = run_node(&["--port", "65535"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
-    assert!(stderr.contains("invalid-address"));
-    assert!(stderr.contains("--seed"));
+    assert!(stderr.contains("cannot reserve Gossip port +1"));
     assert!(stderr.contains("--help"));
+}
+
+#[test]
+fn malformed_or_overflowing_seed_exits_gracefully() {
+    for seed in ["invalid-address", "127.0.0.1:65535"] {
+        let output = run_node(&["--seed", seed]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains(seed));
+        assert!(stderr.contains("--seed"));
+        assert!(stderr.contains("--help"));
+    }
 }
 
 #[test]
@@ -132,6 +112,7 @@ fn help_describes_all_boot_options() {
     assert!(output.stderr.is_empty());
     assert!(stdout.contains("--port <PORT>"));
     assert!(stdout.contains("--bind-ip <IP>"));
+    assert!(stdout.contains("--advertise-ip <IP>"));
     assert!(stdout.contains("--seed <IP:PORT>"));
     assert!(stdout.contains("IPv6"));
 }

@@ -1,5 +1,7 @@
 //! Network address primitives for KinePlex.
 
+pub mod gossip;
+
 use std::net::{AddrParseError, SocketAddr};
 
 /// Parses a seed endpoint as a native IPv4 or IPv6 socket address.
