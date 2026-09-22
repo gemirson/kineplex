@@ -16,6 +16,7 @@ foca = { version = "=0.10.0", features = ["postcard-codec", "std", "tracing"] }
 rand = "=0.8.5"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
+sysinfo = { version = "=0.30.13", default-features = false }
 time = "=0.3.36"
 tokio = { version = "=1.35.1", features = ["macros", "net", "rt", "signal", "sync", "time"] }
 tracing = "=0.1.41"

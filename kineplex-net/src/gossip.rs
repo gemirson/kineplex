@@ -19,18 +19,25 @@ use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
-use tokio::sync::{broadcast, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
+
+use crate::telemetry::{
+    NodeTelemetry, TelemetryCollector, TelemetryDecodeError, NODE_TELEMETRY_ENCODED_LEN,
+};
 
 /// Port offset applied to a node endpoint to obtain its Gossip endpoint.
 pub const GOSSIP_PORT_OFFSET: u16 = 1;
 
 const EXPECTED_CLUSTER_SIZE: u32 = 64;
 const DEFAULT_TOPOLOGY_LOG_INTERVAL: Duration = Duration::from_secs(30);
-const PAYLOAD_VERSION: u8 = 1;
-const PAYLOAD_LENGTH: usize = 28;
+const DEFAULT_TELEMETRY_INTERVAL: Duration = Duration::from_secs(2);
+const PAYLOAD_VERSION: u8 = 2;
+const PAYLOAD_HEADER_LENGTH: usize = 36;
+const PAYLOAD_LENGTH: usize = PAYLOAD_HEADER_LENGTH + NODE_TELEMETRY_ENCODED_LEN;
 const EVENT_CHANNEL_CAPACITY: usize = 128;
+const TELEMETRY_CHANNEL_CAPACITY: usize = 1;
 
 /// Converts a node endpoint into its dedicated Gossip endpoint.
 ///
@@ -109,15 +116,24 @@ impl Identity for GossipIdentity {
 pub struct TopologyPayload {
     node_addr: SocketAddr,
     generation: u64,
+    sequence: u64,
+    telemetry: NodeTelemetry,
 }
 
 impl TopologyPayload {
     /// Creates topology metadata for one running node generation.
     #[must_use]
-    pub const fn new(node_addr: SocketAddr, generation: u64) -> Self {
+    pub const fn new(
+        node_addr: SocketAddr,
+        generation: u64,
+        sequence: u64,
+        telemetry: NodeTelemetry,
+    ) -> Self {
         Self {
             node_addr,
             generation,
+            sequence,
+            telemetry,
         }
     }
 
@@ -131,6 +147,18 @@ impl TopologyPayload {
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Returns the revision of this generation's telemetry sample.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the compact resource telemetry carried by this payload.
+    #[must_use]
+    pub const fn telemetry(&self) -> NodeTelemetry {
+        self.telemetry
     }
 
     fn encode(self) -> [u8; PAYLOAD_LENGTH] {
@@ -148,6 +176,8 @@ impl TopologyPayload {
         }
         encoded[18..20].copy_from_slice(&self.node_addr.port().to_be_bytes());
         encoded[20..28].copy_from_slice(&self.generation.to_be_bytes());
+        encoded[28..36].copy_from_slice(&self.sequence.to_be_bytes());
+        encoded[36..PAYLOAD_LENGTH].copy_from_slice(&self.telemetry.encode());
         encoded
     }
 
@@ -184,8 +214,25 @@ impl TopologyPayload {
             encoded[26],
             encoded[27],
         ]);
+        let sequence = u64::from_be_bytes([
+            encoded[28],
+            encoded[29],
+            encoded[30],
+            encoded[31],
+            encoded[32],
+            encoded[33],
+            encoded[34],
+            encoded[35],
+        ]);
+        let telemetry = NodeTelemetry::decode(&encoded[36..PAYLOAD_LENGTH])
+            .map_err(PayloadDecodeError::InvalidTelemetry)?;
 
-        Ok(Self::new(SocketAddr::new(ip, port), generation))
+        Ok(Self::new(
+            SocketAddr::new(ip, port),
+            generation,
+            sequence,
+            telemetry,
+        ))
     }
 }
 
@@ -194,6 +241,7 @@ enum PayloadDecodeError {
     Truncated,
     UnsupportedVersion(u8),
     UnsupportedAddressFamily(u8),
+    InvalidTelemetry(TelemetryDecodeError),
 }
 
 impl Display for PayloadDecodeError {
@@ -206,6 +254,7 @@ impl Display for PayloadDecodeError {
             Self::UnsupportedAddressFamily(family) => {
                 write!(formatter, "unsupported Gossip address family {family}")
             }
+            Self::InvalidTelemetry(error) => write!(formatter, "invalid node telemetry: {error}"),
         }
     }
 }
@@ -234,13 +283,23 @@ impl AsRef<[u8]> for PayloadBroadcast {
 impl Invalidates for PayloadBroadcast {
     fn invalidates(&self, other: &Self) -> bool {
         self.payload.node_addr == other.payload.node_addr
-            && self.payload.generation >= other.payload.generation
+            && self.payload.generation == other.payload.generation
+            && self.payload.sequence >= other.payload.sequence
     }
 }
 
-#[derive(Default)]
 struct PayloadHandler {
-    generations: BTreeMap<SocketAddr, u64>,
+    revisions: BTreeMap<(SocketAddr, u64), u64>,
+    decoded_payloads: mpsc::UnboundedSender<TopologyPayload>,
+}
+
+impl PayloadHandler {
+    fn new(decoded_payloads: mpsc::UnboundedSender<TopologyPayload>) -> Self {
+        Self {
+            revisions: BTreeMap::new(),
+            decoded_payloads,
+        }
+    }
 }
 
 impl BroadcastHandler<GossipIdentity> for PayloadHandler {
@@ -249,14 +308,15 @@ impl BroadcastHandler<GossipIdentity> for PayloadHandler {
 
     fn receive_item(&mut self, data: impl Buf) -> Result<Option<Self::Broadcast>, Self::Error> {
         let payload = TopologyPayload::decode(data)?;
+        let revision_key = (payload.node_addr, payload.generation);
         let is_new = self
-            .generations
-            .get(&payload.node_addr)
-            .map_or(true, |generation| payload.generation > *generation);
+            .revisions
+            .get(&revision_key)
+            .map_or(true, |sequence| payload.sequence > *sequence);
 
         if is_new {
-            self.generations
-                .insert(payload.node_addr, payload.generation);
+            self.revisions.insert(revision_key, payload.sequence);
+            let _send_result = self.decoded_payloads.send(payload);
             Ok(Some(PayloadBroadcast::new(payload)))
         } else {
             Ok(None)
@@ -275,6 +335,8 @@ pub struct GossipConfig {
     pub seeds: Vec<SocketAddr>,
     /// Interval between structured topology snapshots.
     pub topology_log_interval: Duration,
+    /// Interval between local CPU and memory telemetry samples.
+    pub telemetry_interval: Duration,
 }
 
 impl GossipConfig {
@@ -286,6 +348,7 @@ impl GossipConfig {
             advertise_addr,
             seeds,
             topology_log_interval: DEFAULT_TOPOLOGY_LOG_INTERVAL,
+            telemetry_interval: DEFAULT_TELEMETRY_INTERVAL,
         }
     }
 
@@ -293,6 +356,13 @@ impl GossipConfig {
     #[must_use]
     pub const fn with_topology_log_interval(mut self, interval: Duration) -> Self {
         self.topology_log_interval = interval;
+        self
+    }
+
+    /// Overrides how often local CPU and memory telemetry is sampled.
+    #[must_use]
+    pub const fn with_telemetry_interval(mut self, interval: Duration) -> Self {
+        self.telemetry_interval = interval;
         self
     }
 }
@@ -317,6 +387,12 @@ pub enum GossipError {
     InvalidProtocolConfiguration,
     /// The topology logging interval was zero and would make Tokio panic.
     InvalidTopologyLogInterval,
+    /// The telemetry collection interval was zero.
+    InvalidTelemetryInterval,
+    /// The operating system telemetry collector thread could not start.
+    TelemetryCollector(io::Error),
+    /// The Gossip supervisor is no longer accepting telemetry updates.
+    SupervisorUnavailable,
     /// The advertised endpoint used an unspecified, unreachable interface.
     UnspecifiedAdvertiseAddress,
 }
@@ -332,6 +408,13 @@ impl Display for GossipError {
             Self::InvalidTopologyLogInterval => {
                 formatter.write_str("Gossip topology log interval must be greater than zero")
             }
+            Self::InvalidTelemetryInterval => {
+                formatter.write_str("Gossip telemetry interval must be greater than zero")
+            }
+            Self::TelemetryCollector(error) => {
+                write!(formatter, "telemetry collector failed to start: {error}")
+            }
+            Self::SupervisorUnavailable => formatter.write_str("Gossip supervisor is unavailable"),
             Self::UnspecifiedAdvertiseAddress => {
                 formatter.write_str("Gossip advertise address must be reachable")
             }
@@ -342,10 +425,12 @@ impl Display for GossipError {
 impl Error for GossipError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io(error) => Some(error),
+            Self::Io(error) | Self::TelemetryCollector(error) => Some(error),
             Self::Supervisor(error) => Some(error),
             Self::InvalidProtocolConfiguration
             | Self::InvalidTopologyLogInterval
+            | Self::InvalidTelemetryInterval
+            | Self::SupervisorUnavailable
             | Self::UnspecifiedAdvertiseAddress => None,
         }
     }
@@ -362,6 +447,9 @@ pub struct GossipHandle {
     local_addr: SocketAddr,
     events: broadcast::Sender<MembershipEvent>,
     members: watch::Receiver<Arc<[SocketAddr]>>,
+    telemetry: watch::Receiver<Arc<BTreeMap<SocketAddr, NodeTelemetry>>>,
+    telemetry_updates: mpsc::Sender<NodeTelemetry>,
+    telemetry_collector: TelemetryCollector,
     shutdown: Option<oneshot::Sender<()>>,
     supervisor: JoinHandle<Result<(), GossipError>>,
 }
@@ -385,12 +473,34 @@ impl GossipHandle {
         self.members.borrow().clone()
     }
 
+    /// Returns the latest decoded telemetry sample for each known endpoint.
+    #[must_use]
+    pub fn telemetry(&self) -> Arc<BTreeMap<SocketAddr, NodeTelemetry>> {
+        self.telemetry.borrow().clone()
+    }
+
+    /// Enqueues an explicit local sample for Gossip dissemination.
+    ///
+    /// This supports future Arrow pool accounting while the built-in collector supplies
+    /// the operating-system baseline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GossipError::SupervisorUnavailable`] after the driver has stopped.
+    pub async fn update_telemetry(&self, telemetry: NodeTelemetry) -> Result<(), GossipError> {
+        self.telemetry_updates
+            .send(telemetry)
+            .await
+            .map_err(|_| GossipError::SupervisorUnavailable)
+    }
+
     /// Gracefully leaves the cluster and waits for all Gossip resources to stop.
     ///
     /// # Errors
     ///
     /// Returns [`GossipError`] if the supervisor or UDP transport failed.
     pub async fn shutdown(mut self) -> Result<(), GossipError> {
+        self.telemetry_collector.stop();
         if let Some(shutdown) = self.shutdown.take() {
             let _shutdown_result = shutdown.send(());
         }
@@ -401,6 +511,7 @@ impl GossipHandle {
     ///
     /// This models a process crash and is primarily useful for failure-detector tests.
     pub async fn abort(mut self) {
+        self.telemetry_collector.stop();
         self.shutdown.take();
         self.supervisor.abort();
         let _join_result = self.supervisor.await;
@@ -424,6 +535,9 @@ pub async fn start(mut config: GossipConfig) -> Result<GossipHandle, GossipError
     if config.topology_log_interval.is_zero() {
         return Err(GossipError::InvalidTopologyLogInterval);
     }
+    if config.telemetry_interval.is_zero() {
+        return Err(GossipError::InvalidTelemetryInterval);
+    }
     if config.advertise_addr.ip().is_unspecified() {
         return Err(GossipError::UnspecifiedAdvertiseAddress);
     }
@@ -441,13 +555,15 @@ pub async fn start(mut config: GossipConfig) -> Result<GossipHandle, GossipError
 
     let mut rng = StdRng::from_entropy();
     let identity = GossipIdentity::new(config.advertise_addr, rng.next_u64());
-    let payload = TopologyPayload::new(identity.addr, identity.generation);
+    let initial_telemetry = NodeTelemetry::default();
+    let payload = TopologyPayload::new(identity.addr, identity.generation, 0, initial_telemetry);
+    let (decoded_payload_tx, decoded_payload_rx) = mpsc::unbounded_channel();
     let mut foca = Foca::with_custom_broadcast(
         identity.clone(),
         protocol_config,
         rng,
         PostcardCodec,
-        PayloadHandler::default(),
+        PayloadHandler::new(decoded_payload_tx),
     );
     if let Err(error) = foca.add_broadcast(&payload.encode()) {
         tracing::warn!(error = %error, "failed to register local Gossip payload");
@@ -459,8 +575,14 @@ pub async fn start(mut config: GossipConfig) -> Result<GossipHandle, GossipError
         .filter(|seed| *seed != identity.addr)
         .collect::<BTreeSet<_>>();
     let initial_members: Arc<[SocketAddr]> = Arc::from([identity.addr]);
+    let initial_telemetry_by_node = Arc::new(BTreeMap::from([(identity.addr, initial_telemetry)]));
     let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
     let (members_tx, members_rx) = watch::channel(initial_members);
+    let (telemetry_state_tx, telemetry_state_rx) = watch::channel(initial_telemetry_by_node);
+    let (telemetry_updates_tx, telemetry_updates_rx) = mpsc::channel(TELEMETRY_CHANNEL_CAPACITY);
+    let telemetry_collector =
+        TelemetryCollector::spawn(config.telemetry_interval, telemetry_updates_tx.clone())
+            .map_err(GossipError::TelemetryCollector)?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let supervisor_events = events.clone();
     let supervisor = tokio::spawn(run_supervisor(
@@ -471,6 +593,9 @@ pub async fn start(mut config: GossipConfig) -> Result<GossipHandle, GossipError
         config.topology_log_interval,
         supervisor_events,
         members_tx,
+        telemetry_updates_rx,
+        decoded_payload_rx,
+        telemetry_state_tx,
         shutdown_rx,
     ));
 
@@ -478,6 +603,9 @@ pub async fn start(mut config: GossipConfig) -> Result<GossipHandle, GossipError
         local_addr,
         events,
         members: members_rx,
+        telemetry: telemetry_state_rx,
+        telemetry_updates: telemetry_updates_tx,
+        telemetry_collector,
         shutdown: Some(shutdown_tx),
         supervisor,
     })
@@ -562,6 +690,50 @@ impl Membership {
     fn known_count(&self) -> usize {
         self.known.len()
     }
+
+    fn is_active(&self, addr: SocketAddr) -> bool {
+        self.active_generations.contains_key(&addr)
+    }
+}
+
+#[derive(Default)]
+struct TelemetryState {
+    revisions: BTreeMap<(SocketAddr, u64), u64>,
+    current: BTreeMap<SocketAddr, (u64, u64, NodeTelemetry)>,
+}
+
+impl TelemetryState {
+    fn apply(&mut self, payload: TopologyPayload) -> bool {
+        let revision_key = (payload.node_addr, payload.generation);
+        if self
+            .revisions
+            .get(&revision_key)
+            .is_some_and(|sequence| *sequence >= payload.sequence)
+        {
+            return false;
+        }
+        self.revisions.insert(revision_key, payload.sequence);
+        self.current.insert(
+            payload.node_addr,
+            (payload.generation, payload.sequence, payload.telemetry),
+        );
+        true
+    }
+
+    fn remove(&mut self, addr: SocketAddr) -> bool {
+        self.revisions
+            .retain(|(node_addr, _), _| *node_addr != addr);
+        self.current.remove(&addr).is_some()
+    }
+
+    fn snapshot(&self) -> Arc<BTreeMap<SocketAddr, NodeTelemetry>> {
+        Arc::new(
+            self.current
+                .iter()
+                .map(|(addr, (_, _, telemetry))| (*addr, *telemetry))
+                .collect(),
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -573,11 +745,16 @@ async fn run_supervisor(
     topology_log_interval: Duration,
     events: broadcast::Sender<MembershipEvent>,
     members_tx: watch::Sender<Arc<[SocketAddr]>>,
+    mut telemetry_updates: mpsc::Receiver<NodeTelemetry>,
+    mut decoded_payloads: mpsc::UnboundedReceiver<TopologyPayload>,
+    telemetry_tx: watch::Sender<Arc<BTreeMap<SocketAddr, NodeTelemetry>>>,
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<(), GossipError> {
     let mut runtime = AccumulatingRuntime::new();
     let mut scheduled_timers = Vec::new();
     let mut membership = Membership::new(foca.identity().addr);
+    let mut telemetry_state = TelemetryState::default();
+    let mut local_telemetry_sequence = 0_u64;
     let mut receive_buffer = vec![0_u8; receive_buffer_size];
     let mut topology_tick = tokio::time::interval(topology_log_interval);
     topology_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -595,6 +772,9 @@ async fn run_supervisor(
         &mut membership,
         &events,
         &members_tx,
+        &mut decoded_payloads,
+        &mut telemetry_state,
+        &telemetry_tx,
     )
     .await;
 
@@ -615,11 +795,29 @@ async fn run_supervisor(
                     handle_protocol_result(foca.handle_timer(timer, &mut runtime), "handle_timer");
                 }
             }
+            Some(telemetry) = telemetry_updates.recv() => {
+                local_telemetry_sequence = local_telemetry_sequence.wrapping_add(1);
+                let identity = foca.identity().clone();
+                let payload = TopologyPayload::new(
+                    identity.addr,
+                    identity.generation,
+                    local_telemetry_sequence,
+                    telemetry,
+                );
+                handle_protocol_result(
+                    foca.add_broadcast(&payload.encode()),
+                    "add_telemetry_broadcast",
+                );
+                if foca.num_members() > 0 {
+                    handle_protocol_result(foca.gossip(&mut runtime), "gossip_telemetry");
+                }
+            }
             _ = topology_tick.tick() => {
                 let active = membership.snapshot();
                 tracing::info!(
                     known_count = membership.known_count(),
                     active_count = active.len(),
+                    telemetry_count = telemetry_state.current.len(),
                     members = ?active,
                     "Gossip topology snapshot"
                 );
@@ -636,6 +834,9 @@ async fn run_supervisor(
             &mut membership,
             &events,
             &members_tx,
+            &mut decoded_payloads,
+            &mut telemetry_state,
+            &telemetry_tx,
         )
         .await;
     }
@@ -648,6 +849,9 @@ async fn run_supervisor(
         &mut membership,
         &events,
         &members_tx,
+        &mut decoded_payloads,
+        &mut telemetry_state,
+        &telemetry_tx,
     )
     .await;
     Ok(())
@@ -659,6 +863,7 @@ fn handle_protocol_result(result: Result<(), foca::Error>, operation: &'static s
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drain_runtime(
     socket: &UdpSocket,
     runtime: &mut AccumulatingRuntime,
@@ -666,6 +871,9 @@ async fn drain_runtime(
     membership: &mut Membership,
     events: &broadcast::Sender<MembershipEvent>,
     members_tx: &watch::Sender<Arc<[SocketAddr]>>,
+    decoded_payloads: &mut mpsc::UnboundedReceiver<TopologyPayload>,
+    telemetry_state: &mut TelemetryState,
+    telemetry_tx: &watch::Sender<Arc<BTreeMap<SocketAddr, NodeTelemetry>>>,
 ) {
     while let Some((destination, packet)) = runtime.outgoing.pop_front() {
         match socket.send_to(&packet, destination.addr).await {
@@ -693,6 +901,7 @@ async fn drain_runtime(
     );
 
     let mut membership_changed = false;
+    let mut telemetry_changed = false;
     while let Some(notification) = runtime.notifications.pop_front() {
         match notification {
             Notification::MemberUp(identity) => {
@@ -705,6 +914,7 @@ async fn drain_runtime(
             Notification::MemberDown(identity) => {
                 if membership.member_down(identity.addr) {
                     membership_changed = true;
+                    telemetry_changed |= telemetry_state.remove(identity.addr);
                     let _send_result = events.send(MembershipEvent::MemberDown(identity.addr));
                     tracing::info!(member = %identity.addr, "MemberDown");
                 }
@@ -722,6 +932,24 @@ async fn drain_runtime(
 
     if membership_changed {
         let _previous_snapshot = members_tx.send_replace(membership.snapshot());
+    }
+
+    while let Ok(payload) = decoded_payloads.try_recv() {
+        if membership.is_active(payload.node_addr) && telemetry_state.apply(payload) {
+            telemetry_changed = true;
+            tracing::debug!(
+                member = %payload.node_addr,
+                generation = payload.generation,
+                sequence = payload.sequence,
+                cpu_utilization_pct = payload.telemetry.cpu_utilization_pct,
+                arrow_mem_avail_mb = payload.telemetry.arrow_mem_avail_mb,
+                "node telemetry updated"
+            );
+        }
+    }
+
+    if telemetry_changed {
+        let _previous_snapshot = telemetry_tx.send_replace(telemetry_state.snapshot());
     }
 }
 
@@ -745,7 +973,9 @@ mod tests {
     use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 
     use super::{gossip_addr, PayloadHandler, TopologyPayload};
+    use crate::telemetry::NodeTelemetry;
     use foca::BroadcastHandler;
+    use tokio::sync::mpsc;
 
     #[test]
     fn derives_gossip_port_for_ipv4_and_ipv6() {
@@ -774,18 +1004,26 @@ mod tests {
     #[test]
     fn custom_payload_round_trips_and_deduplicates() {
         let endpoint = SocketAddr::from(([192, 168, 1, 10], 8001));
-        let payload = TopologyPayload::new(endpoint, 42);
+        let telemetry = NodeTelemetry::new(42, 16_384);
+        let payload = TopologyPayload::new(endpoint, 42, 7, telemetry);
         let encoded = payload.encode();
         assert_eq!(
             TopologyPayload::decode(encoded.as_slice()).expect("valid payload must decode"),
             payload
         );
 
-        let mut handler = PayloadHandler::default();
+        let (decoded_tx, mut decoded_rx) = mpsc::unbounded_channel();
+        let mut handler = PayloadHandler::new(decoded_tx);
         assert!(handler
             .receive_item(encoded.as_slice())
             .expect("new payload must parse")
             .is_some());
+        assert_eq!(
+            decoded_rx
+                .try_recv()
+                .expect("new telemetry must be emitted"),
+            payload
+        );
         assert!(handler
             .receive_item(encoded.as_slice())
             .expect("duplicate payload must parse")
@@ -799,7 +1037,12 @@ mod tests {
             Err(super::PayloadDecodeError::Truncated)
         ));
 
-        let payload = TopologyPayload::new("[2001:db8::1]:8001".parse().expect("valid fixture"), 7);
+        let payload = TopologyPayload::new(
+            "[2001:db8::1]:8001".parse().expect("valid fixture"),
+            7,
+            11,
+            NodeTelemetry::new(55, 8_192),
+        );
         let mut encoded = payload.encode();
         assert_eq!(
             TopologyPayload::decode(encoded.as_slice()).expect("IPv6 payload must decode"),
@@ -816,6 +1059,13 @@ mod tests {
         assert!(matches!(
             TopologyPayload::decode(encoded.as_slice()),
             Err(super::PayloadDecodeError::UnsupportedAddressFamily(99))
+        ));
+
+        encoded[1] = 6;
+        encoded[36] = 101;
+        assert!(matches!(
+            TopologyPayload::decode(encoded.as_slice()),
+            Err(super::PayloadDecodeError::InvalidTelemetry(_))
         ));
     }
 }
