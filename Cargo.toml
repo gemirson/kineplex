@@ -12,6 +12,7 @@ repository = "https://github.com/gemirson/kineplex"
 
 [workspace.dependencies]
 bytes = "=1.5.0"
+dashmap = { version = "=5.5.3", default-features = false }
 foca = { version = "=0.10.0", features = ["postcard-codec", "std", "tracing"] }
 rand = "=0.8.5"
 serde = { version = "=1.0.228", features = ["derive"] }

@@ -1,6 +1,7 @@
 //! Network address primitives for KinePlex.
 
 pub mod gossip;
+pub mod routing;
 pub mod telemetry;
 
 use std::net::{AddrParseError, SocketAddr};

@@ -23,6 +23,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
+use crate::routing::RoutingTable;
 use crate::telemetry::{
     NodeTelemetry, TelemetryCollector, TelemetryDecodeError, NODE_TELEMETRY_ENCODED_LEN,
 };
@@ -448,6 +449,7 @@ pub struct GossipHandle {
     events: broadcast::Sender<MembershipEvent>,
     members: watch::Receiver<Arc<[SocketAddr]>>,
     telemetry: watch::Receiver<Arc<BTreeMap<SocketAddr, NodeTelemetry>>>,
+    routing_table: RoutingTable,
     telemetry_updates: mpsc::Sender<NodeTelemetry>,
     telemetry_collector: TelemetryCollector,
     shutdown: Option<oneshot::Sender<()>>,
@@ -477,6 +479,12 @@ impl GossipHandle {
     #[must_use]
     pub fn telemetry(&self) -> Arc<BTreeMap<SocketAddr, NodeTelemetry>> {
         self.telemetry.borrow().clone()
+    }
+
+    /// Returns a cheap clone of the live DashMap-backed routing view.
+    #[must_use]
+    pub fn routing_table(&self) -> RoutingTable {
+        self.routing_table.clone()
     }
 
     /// Enqueues an explicit local sample for Gossip dissemination.
@@ -576,6 +584,8 @@ pub async fn start(mut config: GossipConfig) -> Result<GossipHandle, GossipError
         .collect::<BTreeSet<_>>();
     let initial_members: Arc<[SocketAddr]> = Arc::from([identity.addr]);
     let initial_telemetry_by_node = Arc::new(BTreeMap::from([(identity.addr, initial_telemetry)]));
+    let routing_table = RoutingTable::new();
+    routing_table.ensure(identity.addr, initial_telemetry);
     let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
     let (members_tx, members_rx) = watch::channel(initial_members);
     let (telemetry_state_tx, telemetry_state_rx) = watch::channel(initial_telemetry_by_node);
@@ -596,6 +606,7 @@ pub async fn start(mut config: GossipConfig) -> Result<GossipHandle, GossipError
         telemetry_updates_rx,
         decoded_payload_rx,
         telemetry_state_tx,
+        routing_table.clone(),
         shutdown_rx,
     ));
 
@@ -604,6 +615,7 @@ pub async fn start(mut config: GossipConfig) -> Result<GossipHandle, GossipError
         events,
         members: members_rx,
         telemetry: telemetry_state_rx,
+        routing_table: routing_table.clone(),
         telemetry_updates: telemetry_updates_tx,
         telemetry_collector,
         shutdown: Some(shutdown_tx),
@@ -704,6 +716,14 @@ struct TelemetryState {
 
 impl TelemetryState {
     fn apply(&mut self, payload: TopologyPayload) -> bool {
+        if self
+            .current
+            .get(&payload.node_addr)
+            .is_some_and(|(generation, _, _)| payload.generation < *generation)
+        {
+            return false;
+        }
+
         let revision_key = (payload.node_addr, payload.generation);
         if self
             .revisions
@@ -748,6 +768,7 @@ async fn run_supervisor(
     mut telemetry_updates: mpsc::Receiver<NodeTelemetry>,
     mut decoded_payloads: mpsc::UnboundedReceiver<TopologyPayload>,
     telemetry_tx: watch::Sender<Arc<BTreeMap<SocketAddr, NodeTelemetry>>>,
+    routing_table: RoutingTable,
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<(), GossipError> {
     let mut runtime = AccumulatingRuntime::new();
@@ -775,6 +796,7 @@ async fn run_supervisor(
         &mut decoded_payloads,
         &mut telemetry_state,
         &telemetry_tx,
+        &routing_table,
     )
     .await;
 
@@ -804,6 +826,10 @@ async fn run_supervisor(
                     local_telemetry_sequence,
                     telemetry,
                 );
+                if telemetry_state.apply(payload) {
+                    routing_table.upsert(identity.addr, telemetry);
+                    let _previous_snapshot = telemetry_tx.send_replace(telemetry_state.snapshot());
+                }
                 handle_protocol_result(
                     foca.add_broadcast(&payload.encode()),
                     "add_telemetry_broadcast",
@@ -837,6 +863,7 @@ async fn run_supervisor(
             &mut decoded_payloads,
             &mut telemetry_state,
             &telemetry_tx,
+            &routing_table,
         )
         .await;
     }
@@ -852,6 +879,7 @@ async fn run_supervisor(
         &mut decoded_payloads,
         &mut telemetry_state,
         &telemetry_tx,
+        &routing_table,
     )
     .await;
     Ok(())
@@ -874,6 +902,7 @@ async fn drain_runtime(
     decoded_payloads: &mut mpsc::UnboundedReceiver<TopologyPayload>,
     telemetry_state: &mut TelemetryState,
     telemetry_tx: &watch::Sender<Arc<BTreeMap<SocketAddr, NodeTelemetry>>>,
+    routing_table: &RoutingTable,
 ) {
     while let Some((destination, packet)) = runtime.outgoing.pop_front() {
         match socket.send_to(&packet, destination.addr).await {
@@ -906,6 +935,7 @@ async fn drain_runtime(
         match notification {
             Notification::MemberUp(identity) => {
                 if membership.member_up(identity.addr) {
+                    routing_table.ensure(identity.addr, NodeTelemetry::default());
                     membership_changed = true;
                     let _send_result = events.send(MembershipEvent::MemberUp(identity.addr));
                     tracing::info!(member = %identity.addr, "MemberUp");
@@ -915,6 +945,7 @@ async fn drain_runtime(
                 if membership.member_down(identity.addr) {
                     membership_changed = true;
                     telemetry_changed |= telemetry_state.remove(identity.addr);
+                    let _removed_route = routing_table.remove(&identity.addr);
                     let _send_result = events.send(MembershipEvent::MemberDown(identity.addr));
                     tracing::info!(member = %identity.addr, "MemberDown");
                 }
@@ -936,6 +967,7 @@ async fn drain_runtime(
 
     while let Ok(payload) = decoded_payloads.try_recv() {
         if membership.is_active(payload.node_addr) && telemetry_state.apply(payload) {
+            routing_table.upsert(payload.node_addr, payload.telemetry);
             telemetry_changed = true;
             tracing::debug!(
                 member = %payload.node_addr,

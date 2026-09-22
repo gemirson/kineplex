@@ -110,12 +110,15 @@ async fn survivors_mark_a_crashed_node_down() {
 
     let mut node_a_events = node_a.subscribe();
     let mut node_b_events = node_b.subscribe();
+    let node_b_routing = node_b.routing_table();
+    assert!(node_b_routing.contains(&node_c_addr));
     node_c.abort().await;
 
     tokio::join!(
         wait_for_member_down(&mut node_a_events, node_c_addr),
         wait_for_member_down(&mut node_b_events, node_c_addr)
     );
+    wait_for_route_absent(&node_b_routing, node_c_addr).await;
     let expected_after_failure = [node_a.local_addr(), node_b.local_addr()];
     wait_for_convergence(&[&node_a, &node_b], &expected_after_failure).await;
 
@@ -174,8 +177,26 @@ async fn telemetry_is_collected_off_runtime_and_propagated_to_a_peer() {
         .await
         .expect("the running supervisor must accept telemetry");
     wait_for_telemetry(&node_b, node_a.local_addr(), expected).await;
+    let node_b_routing = node_b.routing_table();
+    assert_eq!(node_b_routing.get(&node_a.local_addr()), Some(expected));
+    let best_nodes = node_b_routing.get_best_nodes(2);
+    assert!(best_nodes.contains(&node_a.local_addr()));
+    assert!(best_nodes.contains(&node_b.local_addr()));
 
     let (a_result, b_result) = tokio::join!(node_a.shutdown(), node_b.shutdown());
     assert!(a_result.is_ok());
     assert!(b_result.is_ok());
+}
+
+async fn wait_for_route_absent(table: &kineplex_net::routing::RoutingTable, member: SocketAddr) {
+    timeout(TELEMETRY_TIMEOUT, async {
+        loop {
+            if !table.contains(&member) {
+                return;
+            }
+            sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("MemberDown must evict the routing entry");
 }
