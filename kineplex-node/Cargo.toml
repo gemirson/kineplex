@@ -9,11 +9,15 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+axum.workspace = true
 clap = { version = "=4.4.18", default-features = false, features = ["derive", "error-context", "help", "std", "usage"] }
 kineplex-core = { path = "../kineplex-core" }
 kineplex-net = { path = "../kineplex-net" }
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true
