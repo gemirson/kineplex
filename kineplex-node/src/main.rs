@@ -75,14 +75,6 @@ async fn run() -> ExitCode {
         }
     };
 
-    let control = match ControlServer::bind(config.bind_addr()).await {
-        Ok(server) => server,
-        Err(error) => {
-            tracing::error!(%error, "failed to start Control Plane TCP server");
-            return ExitCode::FAILURE;
-        }
-    };
-
     let gossip = match start(GossipConfig::new(
         gossip_bind_addr,
         gossip_advertise_addr,
@@ -92,11 +84,20 @@ async fn run() -> ExitCode {
     {
         Ok(handle) => handle,
         Err(error) => {
-            let _shutdown_result = control.shutdown().await;
             tracing::error!(%error, "failed to start Gossip service");
             return ExitCode::FAILURE;
         }
     };
+
+    let control =
+        match ControlServer::bind_with_routing(config.bind_addr(), gossip.routing_table()).await {
+            Ok(server) => server,
+            Err(error) => {
+                let _shutdown_result = gossip.shutdown().await;
+                tracing::error!(%error, "failed to start Control Plane TCP server");
+                return ExitCode::FAILURE;
+            }
+        };
 
     tracing::info!(
         bind_addr = %config.bind_addr(),

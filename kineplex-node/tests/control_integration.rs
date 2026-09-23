@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use kineplex_net::routing::RoutingTable;
+use kineplex_net::telemetry::NodeTelemetry;
 use kineplex_node::control::ControlServer;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -132,4 +134,104 @@ async fn slow_body_is_rejected_after_two_seconds() {
         .shutdown()
         .await
         .expect("server must shut down cleanly");
+}
+
+#[tokio::test]
+async fn dag_cycle_and_orphan_are_rejected_before_acceptance() {
+    let server = ControlServer::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("Control Plane must bind an ephemeral TCP port");
+    let cycle = request(
+        r#"{"client_id":"client","nodes":[{"id":"A"},{"id":"B"},{"id":"C"}],"edges":[{"source":"A","target":"B"},{"source":"B","target":"C"},{"source":"C","target":"A"}]}"#,
+    );
+    let orphan = request(
+        r#"{"client_id":"client","nodes":[{"id":"A"},{"id":"B"},{"id":"C"}],"edges":[{"source":"A","target":"B"}]}"#,
+    );
+
+    let cycle_response = send_http(server.local_addr(), &cycle).await;
+    let orphan_response = send_http(server.local_addr(), &orphan).await;
+    assert_eq!(status(&cycle_response), 400);
+    assert!(response_json(&cycle_response)["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("cycle detected")));
+    assert_eq!(status(&orphan_response), 400);
+    assert!(response_json(&orphan_response)["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("orphan node detected")));
+
+    server
+        .shutdown()
+        .await
+        .expect("server must shut down cleanly");
+}
+
+#[tokio::test]
+async fn allocator_retries_next_idle_node_when_first_candidate_is_unavailable() {
+    let receiver = ControlServer::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("receiver Control Plane must bind");
+    let receiver_gossip =
+        SocketAddr::new(receiver.local_addr().ip(), receiver.local_addr().port() + 1);
+    let unavailable_gossip = SocketAddr::from(([127, 0, 0, 1], 10));
+    let routing = RoutingTable::new();
+    routing.upsert(unavailable_gossip, NodeTelemetry::new(1, 100));
+    routing.upsert(receiver_gossip, NodeTelemetry::new(2, 100));
+
+    let coordinator =
+        ControlServer::bind_with_routing(SocketAddr::from(([127, 0, 0, 1], 0)), routing)
+            .await
+            .expect("coordinator Control Plane must bind");
+    let response = send_http(
+        coordinator.local_addr(),
+        &request(
+            r#"{"client_id":"client","nodes":[{"id":"step-1","wasm":"filter.wasm"}],"edges":[]}"#,
+        ),
+    )
+    .await;
+
+    assert_eq!(status(&response), 202);
+    assert_eq!(
+        response_json(&response)["status"],
+        "ACCEPTED_FOR_VALIDATION"
+    );
+
+    coordinator
+        .shutdown()
+        .await
+        .expect("coordinator must shut down");
+    receiver.shutdown().await.expect("receiver must shut down");
+}
+
+#[tokio::test]
+async fn allocator_returns_failure_after_partial_allocation_and_rolls_back() {
+    let receiver = ControlServer::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("receiver Control Plane must bind");
+    let receiver_gossip =
+        SocketAddr::new(receiver.local_addr().ip(), receiver.local_addr().port() + 1);
+    let unavailable_gossip = SocketAddr::from(([127, 0, 0, 1], 10));
+    let routing = RoutingTable::new();
+    routing.upsert(receiver_gossip, NodeTelemetry::new(1, 100));
+    routing.upsert(unavailable_gossip, NodeTelemetry::new(2, 100));
+
+    let coordinator =
+        ControlServer::bind_with_routing(SocketAddr::from(([127, 0, 0, 1], 0)), routing)
+            .await
+            .expect("coordinator Control Plane must bind");
+    let response = send_http(
+        coordinator.local_addr(),
+        &request(r#"{"client_id":"client","nodes":[{"id":"step-1"},{"id":"step-2"}],"edges":[{"source":"step-1","target":"step-2"}]}"#),
+    )
+    .await;
+
+    assert_eq!(status(&response), 503);
+    assert!(response_json(&response)["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("no candidate accepted")));
+
+    coordinator
+        .shutdown()
+        .await
+        .expect("coordinator must shut down");
+    receiver.shutdown().await.expect("receiver must shut down");
 }

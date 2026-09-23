@@ -1,5 +1,6 @@
 //! Core configuration and domain types for KinePlex.
 
+pub mod graph;
 pub mod observability;
 
 use std::error::Error;

@@ -1,8 +1,9 @@
-//! TCP Control Plane endpoint for graph submissions.
+//! TCP Control Plane endpoint for graph submissions and allocation commands.
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, Json, Request};
@@ -11,8 +12,11 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{serve, Router};
+use kineplex_core::graph::KineGraph;
+use kineplex_net::routing::RoutingTable;
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -20,12 +24,9 @@ use uuid::Uuid;
 
 const GRAPH_BODY_LIMIT_BYTES: usize = 1_048_576;
 const GRAPH_READ_TIMEOUT: Duration = Duration::from_secs(2);
+const ALLOCATION_ACCEPT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Raw graph payload accepted by the Control Plane.
-///
-/// The node and edge entries remain opaque JSON at this boundary so the control
-/// plane can accept the graph representation before a later validator assigns
-/// domain-specific semantics.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubmitGraphRequest {
@@ -49,7 +50,7 @@ impl SubmitGraphRequest {
     }
 }
 
-/// Accepted response returned after a graph passes boundary validation.
+/// Accepted response returned after a graph passes validation and allocation.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SubmitGraphResponse {
     /// Server-generated graph identifier.
@@ -61,6 +62,32 @@ pub struct SubmitGraphResponse {
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AllocationRequest {
+    allocation_id: Uuid,
+    step_id: String,
+    wasm: String,
+    listen_to: Option<SocketAddr>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CancelAllocationRequest {
+    allocation_id: Uuid,
+    step_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AllocationResponse {
+    status: &'static str,
+}
+
+#[derive(Clone)]
+struct ControlState {
+    routing_table: RoutingTable,
 }
 
 /// Error returned while binding or stopping the Control Plane server.
@@ -98,15 +125,16 @@ pub struct ControlServer {
 }
 
 impl ControlServer {
-    /// Binds the Control Plane TCP listener before returning.
-    ///
-    /// The listener uses the node's base port; Gossip remains on its UDP
-    /// base-port-plus-one endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlServerError::Server`] if the TCP address cannot be bound.
+    /// Binds a standalone Control Plane with no allocation candidates.
     pub async fn bind(address: SocketAddr) -> Result<Self, ControlServerError> {
+        Self::bind_with_routing(address, RoutingTable::new()).await
+    }
+
+    /// Binds the Control Plane with the live Gossip routing view.
+    pub async fn bind_with_routing(
+        address: SocketAddr,
+        routing_table: RoutingTable,
+    ) -> Result<Self, ControlServerError> {
         let listener = TcpListener::bind(address)
             .await
             .map_err(|error| ControlServerError::Server(error.to_string()))?;
@@ -114,8 +142,9 @@ impl ControlServer {
             .local_addr()
             .map_err(|error| ControlServerError::Server(error.to_string()))?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let state = Arc::new(ControlState { routing_table });
         let task = tokio::spawn(async move {
-            serve(listener, router())
+            serve(listener, router(state))
                 .with_graceful_shutdown(async {
                     let _shutdown_result = shutdown_rx.await;
                 })
@@ -138,10 +167,6 @@ impl ControlServer {
     }
 
     /// Stops the HTTP task and waits for its resources to be released.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the server task fails or cannot be joined.
     pub async fn shutdown(mut self) -> Result<(), ControlServerError> {
         if let Some(shutdown) = self.shutdown.take() {
             let _send_result = shutdown.send(());
@@ -150,9 +175,12 @@ impl ControlServer {
     }
 }
 
-fn router() -> Router {
+fn router(state: Arc<ControlState>) -> Router {
     Router::new()
         .route("/submit_graph", post(submit_graph))
+        .route("/allocate_step", post(allocate_step))
+        .route("/cancel_allocation", post(cancel_allocation))
+        .with_state(state)
         .layer(DefaultBodyLimit::max(GRAPH_BODY_LIMIT_BYTES))
         .layer(middleware::from_fn(request_timeout))
 }
@@ -171,19 +199,40 @@ async fn request_timeout(request: Request, next: Next) -> Response {
 }
 
 async fn submit_graph(
+    axum::extract::State(state): axum::extract::State<Arc<ControlState>>,
     payload: Result<Json<SubmitGraphRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     let payload = match payload {
         Ok(Json(payload)) => payload,
         Err(error) => return bad_request(format!("invalid graph JSON: {error}")),
     };
-
     if let Err(error) = payload.validate() {
         return bad_request(error.to_owned());
     }
 
+    let graph = match KineGraph::from_json(&payload.nodes, &payload.edges) {
+        Ok(graph) => graph,
+        Err(error) => return bad_request(format!("invalid graph: {error}")),
+    };
     let graph_id = Uuid::new_v4();
-    tracing::info!(%graph_id, client_id = %payload.client_id, "graph accepted for validation");
+
+    if !state.routing_table.is_empty() {
+        if let Err(error) = allocate_graph(graph_id, &graph, &state.routing_table).await {
+            tracing::error!(%graph_id, %error, "graph allocation failed; rollback completed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse { error }),
+            )
+                .into_response();
+        }
+    }
+
+    tracing::info!(
+        %graph_id,
+        client_id = %payload.client_id,
+        stages = graph.node_count(),
+        "graph accepted for validation"
+    );
     (
         StatusCode::ACCEPTED,
         Json(SubmitGraphResponse {
@@ -192,6 +241,159 @@ async fn submit_graph(
         }),
     )
         .into_response()
+}
+
+async fn allocate_step(Json(request): Json<AllocationRequest>) -> Response {
+    if request.step_id.trim().is_empty() || request.wasm.trim().is_empty() {
+        return bad_request("allocation requires step_id and wasm".to_owned());
+    }
+    tracing::info!(
+        allocation_id = %request.allocation_id,
+        step = %request.step_id,
+        listen_to = ?request.listen_to,
+        "allocation accepted"
+    );
+    (
+        StatusCode::ACCEPTED,
+        Json(AllocationResponse {
+            status: "ALLOCATION_ACCEPTED",
+        }),
+    )
+        .into_response()
+}
+
+async fn cancel_allocation(Json(request): Json<CancelAllocationRequest>) -> Response {
+    tracing::warn!(
+        allocation_id = %request.allocation_id,
+        step = %request.step_id,
+        "allocation cancelled during rollback"
+    );
+    (
+        StatusCode::ACCEPTED,
+        Json(AllocationResponse {
+            status: "ALLOCATION_CANCELLED",
+        }),
+    )
+        .into_response()
+}
+
+async fn allocate_graph(
+    allocation_id: Uuid,
+    graph: &KineGraph,
+    routing_table: &RoutingTable,
+) -> Result<(), String> {
+    let stages = graph.stage_ids();
+    let candidates = routing_table.get_best_nodes(routing_table.len());
+    let mut assigned = Vec::new();
+
+    for (stage_index, stage_id) in stages.iter().enumerate() {
+        let wasm = graph
+            .node_payload(stage_id)
+            .and_then(|payload| payload.get("wasm"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("pending")
+            .to_owned();
+        let listen_to = assigned.last().copied();
+        let mut accepted = false;
+
+        for candidate in candidates.iter().skip(stage_index) {
+            if assigned
+                .iter()
+                .any(|assigned_node| assigned_node == candidate)
+            {
+                continue;
+            }
+            let target = control_addr(*candidate)?;
+            let request = AllocationRequest {
+                allocation_id,
+                step_id: stage_id.clone(),
+                wasm: wasm.clone(),
+                listen_to,
+            };
+            match send_control_request(target, "/allocate_step", &request).await {
+                Ok(()) => {
+                    tracing::info!(step = %stage_id, node = %candidate, "step assigned");
+                    assigned.push(*candidate);
+                    accepted = true;
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(step = %stage_id, node = %candidate, %error, "allocation candidate refused");
+                }
+            }
+        }
+
+        if !accepted {
+            rollback_allocations(allocation_id, &assigned).await;
+            return Err(format!("no candidate accepted step '{stage_id}'"));
+        }
+    }
+
+    tracing::info!(%allocation_id, assigned = assigned.len(), "graph allocation topology established");
+    Ok(())
+}
+
+async fn rollback_allocations(allocation_id: Uuid, assigned: &[SocketAddr]) {
+    for candidate in assigned {
+        if let Ok(target) = control_addr(*candidate) {
+            let request = CancelAllocationRequest {
+                allocation_id,
+                step_id: "rollback".to_owned(),
+            };
+            let _cancel_result = send_control_request(target, "/cancel_allocation", &request).await;
+        }
+    }
+}
+
+fn control_addr(gossip_addr: SocketAddr) -> Result<SocketAddr, String> {
+    let port = gossip_addr
+        .port()
+        .checked_sub(1)
+        .ok_or_else(|| format!("Gossip endpoint {gossip_addr} has no control-plane port"))?;
+    Ok(SocketAddr::new(gossip_addr.ip(), port))
+}
+
+async fn send_control_request<T: Serialize>(
+    target: SocketAddr,
+    path: &str,
+    payload: &T,
+) -> Result<(), String> {
+    let result = timeout(ALLOCATION_ACCEPT_TIMEOUT, async {
+        let mut stream = TcpStream::connect(target)
+            .await
+            .map_err(|error| error.to_string())?;
+        let body = serde_json::to_vec(payload).map_err(|error| error.to_string())?;
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nHost: {target}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|error| error.to_string())?;
+        stream
+            .write_all(&body)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = String::from_utf8_lossy(&response)
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse::<u16>().ok())
+            .ok_or_else(|| "invalid allocation response".to_owned())?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(format!("target returned HTTP {status}"))
+        }
+    })
+    .await;
+    result.map_err(|_| "allocation acceptance timed out after 500ms".to_owned())?
 }
 
 fn bad_request(error: String) -> Response {

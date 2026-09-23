@@ -26,7 +26,7 @@ impl RoutingTable {
     }
 
     /// Inserts or replaces one node's latest telemetry in average O(1) time.
-    pub(crate) fn upsert(&self, node: SocketAddr, telemetry: NodeTelemetry) {
+    pub fn upsert(&self, node: SocketAddr, telemetry: NodeTelemetry) {
         self.entries.insert(node, telemetry);
     }
 
