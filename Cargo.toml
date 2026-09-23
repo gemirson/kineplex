@@ -15,6 +15,8 @@ axum = { version = "=0.7.9", default-features = false, features = ["http1", "jso
 uuid = { version = "=1.4.0", features = ["serde", "v4"] }
 bytes = "=1.5.0"
 dashmap = { version = "=5.5.3", default-features = false }
+flatbuffers = "=23.5.26"
+flatc-rust = "=0.2.0"
 foca = { version = "=0.10.0", features = ["postcard-codec", "std", "tracing"] }
 petgraph = { version = "=0.6.5", default-features = false }
 rand = "=0.8.5"
@@ -28,7 +30,7 @@ tracing-appender = { version = "=0.2.3", default-features = false }
 tracing-subscriber = { version = "=0.3.19", default-features = false, features = ["env-filter", "fmt", "json"] }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "warn"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

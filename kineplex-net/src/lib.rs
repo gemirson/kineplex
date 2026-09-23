@@ -1,6 +1,20 @@
-//! Network address primitives for KinePlex.
+//! Network address primitives and wire contracts for KinePlex.
 
 pub mod gossip;
+
+#[allow(
+    unsafe_code,
+    clippy::all,
+    non_upper_case_globals,
+    unused_imports,
+    unknown_lints,
+    mismatched_lifetime_syntaxes
+)]
+pub mod generated {
+    include!(concat!(env!("OUT_DIR"), "/synapse_header_generated.rs"));
+}
+
+pub mod network;
 pub mod routing;
 pub mod telemetry;
 

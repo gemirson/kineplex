@@ -11,12 +11,16 @@ repository.workspace = true
 [dependencies]
 bytes.workspace = true
 dashmap.workspace = true
+flatbuffers.workspace = true
 foca.workspace = true
 rand.workspace = true
 serde.workspace = true
 sysinfo.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[build-dependencies]
+flatc-rust.workspace = true
 
 [lints]
 workspace = true
