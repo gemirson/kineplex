@@ -1,0 +1,13 @@
+config KINEPLEX
+	tristate "KinePlex geometry driver"
+	depends on X86_64 || ARM64
+	help
+	  Asynchronous fixed-point geometry and geodesic solver for KinePlex.
+
+config KINEPLEX_KUNIT_TEST
+	tristate "KinePlex KUnit tests"
+	depends on KUNIT
+	depends on KINEPLEX
+	default KUNIT_ALL_TESTS
+	help
+	  KUnit coverage for KinePlex geometry and safety primitives.
