@@ -2,6 +2,7 @@
 
 pub mod graph;
 pub mod observability;
+pub mod wasm;
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -148,4 +149,3 @@ mod tests {
         );
     }
 }
-pub mod wasm;
