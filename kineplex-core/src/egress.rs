@@ -7,6 +7,7 @@ use arrow::array::RecordBatch;
 use arrow::ipc::writer::StreamWriter;
 
 use crate::flatbuffers::HeaderBuffer;
+use crate::geometry::{AtomicGeodesicTable, RouteKey};
 use crate::packet::OwnedSynapsePacket;
 use crate::synapse::Synapse;
 
@@ -47,6 +48,33 @@ pub fn build_outbound_spike(
     Ok(OutboundSpike {
         packet: OwnedSynapsePacket::new(header, payload),
         sequence,
+    })
+}
+
+/// Egress packet paired with the next hop selected by the active geodesic snapshot.
+#[derive(Debug)]
+pub struct RoutedOutboundSpike {
+    pub next_node: u64,
+    pub resistance: f64,
+    pub spike: OutboundSpike,
+}
+
+/// Builds an Arrow packet and chooses its next hop using one atomic route lookup.
+pub fn build_routed_spike(
+    routes: &AtomicGeodesicTable,
+    edge: RouteKey,
+    synapse: &Synapse,
+    batch: &RecordBatch,
+    flags: u32,
+) -> Result<RoutedOutboundSpike, EgressError> {
+    let route = routes
+        .lookup(edge)
+        .ok_or(EgressError::RouteUnavailable(edge))?;
+    let spike = build_outbound_spike(synapse, batch, flags)?;
+    Ok(RoutedOutboundSpike {
+        next_node: route.next_node,
+        resistance: route.resistance,
+        spike,
     })
 }
 
@@ -95,6 +123,7 @@ impl OutboundSpike {
 pub enum EgressError {
     PayloadTooLarge,
     Arrow(String),
+    RouteUnavailable(RouteKey),
 }
 
 impl Display for EgressError {
@@ -104,6 +133,9 @@ impl Display for EgressError {
                 formatter.write_str("Arrow IPC payload exceeds u32 framing limit")
             }
             Self::Arrow(error) => write!(formatter, "Arrow IPC serialization failed: {error}"),
+            Self::RouteUnavailable(edge) => {
+                write!(formatter, "no active geodesic route exists for edge {edge}")
+            }
         }
     }
 }
@@ -119,7 +151,8 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::ipc::reader::StreamReader;
 
-    use super::build_outbound_spike;
+    use super::{build_outbound_spike, build_routed_spike};
+    use crate::geometry::{AtomicGeodesicTable, RouteEntry, RouteSnapshot};
     use crate::synapse::Synapse;
 
     #[test]
@@ -147,5 +180,33 @@ mod tests {
                 .num_rows(),
             2
         );
+    }
+
+    #[test]
+    fn routed_egress_uses_the_active_geodesic_next_hop() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "score",
+            DataType::Float32,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(Float32Array::from(vec![3.0]))])
+            .expect("batch is valid");
+        let routes = AtomicGeodesicTable::new(RouteSnapshot {
+            revision: 4,
+            routes: [(
+                8,
+                RouteEntry {
+                    next_node: 12,
+                    resistance: 0.25,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        });
+        let routed = build_routed_spike(&routes, 8, &Synapse::new(1, 2, 3, 4), &batch, 4)
+            .expect("active route exists");
+        assert_eq!(routed.next_node, 12);
+        assert_eq!(routed.resistance, 0.25);
+        assert!(!routed.spike.payload().is_empty());
     }
 }
