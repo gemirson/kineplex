@@ -224,7 +224,7 @@ fn run_metric_worker(
 }
 
 #[cfg(target_os = "linux")]
-fn pin_control_thread() -> Result<(), String> {
+pub(crate) fn pin_control_thread() -> Result<(), String> {
     // SAFETY: the CPU set is initialized before libc reads it, and pthread_self
     // refers to the current worker thread only.
     unsafe {
@@ -248,7 +248,7 @@ fn pin_control_thread() -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn pin_control_thread() -> Result<(), String> {
+pub(crate) fn pin_control_thread() -> Result<(), String> {
     Err("CPU affinity isolation is only available on Linux".to_owned())
 }
 
