@@ -23,6 +23,7 @@ flatbuffers = "=23.5.26"
 flatc-rust = "=0.2.0"
 foca = { version = "=0.10.0", features = ["postcard-codec", "std", "tracing"] }
 futures-util = "=0.3.31"
+libc = "=0.2.189"
 parquet = { version = "=51.0.0", features = ["arrow", "async"] }
 petgraph = { version = "=0.6.5", default-features = false }
 pprof = { version = "=0.13.0", default-features = false, features = ["flamegraph"] }

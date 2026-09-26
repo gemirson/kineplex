@@ -20,6 +20,7 @@ tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
+libc.workspace = true
 parquet.workspace = true
 wasmtime.workspace = true
 
