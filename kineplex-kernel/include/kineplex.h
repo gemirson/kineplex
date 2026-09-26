@@ -68,6 +68,9 @@ int kineplex_geometry_integrate(const struct kineplex_christoffel *symbols,
 				struct kineplex_geodesic_state *state,
 				s64 step_size, u32 steps);
 void kineplex_geometry_get_snapshot(struct kineplex_geometry_snapshot *snapshot);
+void kineplex_debugfs_publish(const struct kineplex_geometry_snapshot *snapshot);
+int kineplex_debugfs_init(void);
+void kineplex_debugfs_exit(void);
 
 /* Shared by the geometry worker and the anti-panic matrix tests. */
 int kineplex_q16_div(s64 numerator, s64 denominator, s64 *result);

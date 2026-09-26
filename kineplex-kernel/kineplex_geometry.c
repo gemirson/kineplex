@@ -159,6 +159,7 @@ static void kineplex_geometry_work(struct work_struct *work)
 	spin_lock_bh(&worker->lock);
 	worker->snapshot = next;
 	spin_unlock_bh(&worker->lock);
+	kineplex_debugfs_publish(&next);
 }
 
 void kineplex_geometry_update_telemetry(const struct kineplex_telemetry *sample)

@@ -1,7 +1,9 @@
 config KINEPLEX
+config KINEPLEX
 	tristate "KinePlex geometry driver"
 	depends on X86_64 || ARM64
 	depends on IO_URING
+	depends on DEBUG_FS
 	help
 	  Asynchronous fixed-point geometry and geodesic solver for KinePlex.
 

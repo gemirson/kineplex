@@ -1,6 +1,6 @@
 # Out-of-tree Kbuild for the KinePlex geometry driver.
 obj-$(CONFIG_KINEPLEX) += kineplex.o
-kineplex-y := kineplex_main.o kineplex_geometry.o kineplex_math.o kineplex_homotopy.o kineplex_uring.o
+kineplex-y := kineplex_main.o kineplex_geometry.o kineplex_math.o kineplex_homotopy.o kineplex_uring.o kineplex_debugfs.o
 
 obj-$(CONFIG_KINEPLEX_KUNIT_TEST) += kineplex_kunit.o
 
