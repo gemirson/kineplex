@@ -11,13 +11,19 @@ static int __init kineplex_init(void)
 	ret = kineplex_geometry_init();
 	if (ret)
 		return ret;
+	ret = kineplex_homotopy_init();
+	if (ret) {
+		kineplex_geometry_exit();
+		return ret;
+	}
 
-	pr_info("kineplex: geometry workqueue initialized\n");
+	pr_info("kineplex: geometry workqueue and homotopy slab initialized\n");
 	return 0;
 }
 
 static void __exit kineplex_exit(void)
 {
+	kineplex_homotopy_exit();
 	kineplex_geometry_exit();
 	pr_info("kineplex: unloaded\n");
 }

@@ -2,12 +2,14 @@
 #ifndef _KINEPLEX_H
 #define _KINEPLEX_H
 
+#include <linux/gfp_types.h>
 #include <linux/types.h>
 
 #define KINEPLEX_Q_SHIFT 16
 #define KINEPLEX_Q_ONE ((s64)1 << KINEPLEX_Q_SHIFT)
 #define KINEPLEX_GEOMETRY_DIM 3
 #define KINEPLEX_MAX_GEODESIC_STEPS 4096
+#define KINEPLEX_HOMOTOPY_MAX_WAYPOINTS 64
 
 /* All geometry values use signed Q16.16 fixed-point representation. */
 struct kineplex_telemetry {
@@ -37,6 +39,17 @@ struct kineplex_geometry_snapshot {
 	struct kineplex_christoffel symbols;
 	u32 active_geodesics;
 };
+
+struct kineplex_homotopy {
+	u16 waypoint_count;
+	s64 waypoints[KINEPLEX_HOMOTOPY_MAX_WAYPOINTS][KINEPLEX_GEOMETRY_DIM];
+};
+
+int kineplex_homotopy_init(void);
+void kineplex_homotopy_exit(void);
+struct kineplex_homotopy *kineplex_homotopy_alloc(gfp_t flags);
+void kineplex_homotopy_free(struct kineplex_homotopy *homotopy);
+void kineplex_homotopy_stats(u64 *allocations, u64 *frees, u32 *in_use);
 
 int kineplex_geometry_init(void);
 void kineplex_geometry_exit(void);

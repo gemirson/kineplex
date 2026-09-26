@@ -13,3 +13,7 @@ make -C /lib/modules/$(uname -r)/build M=$PWD CONFIG_KINEPLEX=m CONFIG_KINEPLEX_
 ```
 
 KUnit can be enabled with `CONFIG_KUNIT=y` and `CONFIG_KINEPLEX_KUNIT_TEST=m` in the target kernel configuration. No kernel headers are installed in the development sandbox, so the Kbuild command must run on a kernel build host.
+
+## FT-067 — homotopy slab allocation
+
+Transient deformation objects are allocated from the custom `kmem_cache` named `kineplex_homotopy_cache` and are zeroed before publication. Allocation, free, and in-use counters are exposed to KUnit; the test performs 10,000 allocate/free cycles and requires zero objects in use before cache destruction. `kineplex_homotopy_exit()` refuses to destroy a cache with outstanding objects, preventing unload-time leaks.

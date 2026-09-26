@@ -31,8 +31,40 @@ static void invalid_job_is_rejected(struct kunit *test)
 		-EINVAL);
 }
 
+static void homotopy_slab_reuses_objects_without_leaking(struct kunit *test)
+{
+	struct kineplex_homotopy *homotopy;
+	u64 allocations_before;
+	u64 frees_before;
+	u64 allocations_after;
+	u64 frees_after;
+	u32 in_use;
+	unsigned int index;
+
+	kineplex_homotopy_stats(&allocations_before, &frees_before, &in_use);
+	KUNIT_EXPECT_EQ(test, in_use, (u32)0);
+	/* The production module owns cache lifetime; KUnit must not destroy it. */
+	homotopy = kineplex_homotopy_alloc(GFP_KERNEL);
+	if (!homotopy) {
+		KUNIT_SKIP(test, "kineplex_homotopy_cache is not loaded");
+		return;
+	}
+	kineplex_homotopy_free(homotopy);
+	for (index = 0; index < 9999; index++) {
+		homotopy = kineplex_homotopy_alloc(GFP_KERNEL);
+		KUNIT_ASSERT_NOT_NULL(test, homotopy);
+		homotopy->waypoint_count = 1;
+		kineplex_homotopy_free(homotopy);
+	}
+	kineplex_homotopy_stats(&allocations_after, &frees_after, &in_use);
+	KUNIT_EXPECT_EQ(test, in_use, (u32)0);
+	KUNIT_EXPECT_GE(test, allocations_after - allocations_before, (u64)10000);
+	KUNIT_EXPECT_GE(test, frees_after - frees_before, (u64)10000);
+}
+
 static struct kunit_case kineplex_geometry_cases[] = {
 	KUNIT_CASE(flat_geodesic_converges_without_acceleration),
+	KUNIT_CASE(homotopy_slab_reuses_objects_without_leaking),
 	KUNIT_CASE(invalid_job_is_rejected),
 	{}
 };
