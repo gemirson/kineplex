@@ -21,3 +21,9 @@ Transient deformation objects are allocated from the custom `kmem_cache` named `
 ## FT-068 — anti-panic mathematical sandbox
 
 All divisions used by the driver pass through checked Q16.16 helpers. The 3x3 metric inverse calculates a fixed-point determinant and cofactors, rejects a zero or sub-resolution determinant with `-EDOM`, and reports arithmetic overflow instead of allowing undefined behavior. The KUnit suite injects a singular tensor and verifies that it is rejected without a fault; it also verifies diagonal inversion and null/zero-denominator guards.
+
+## FT-069 — io_uring route command
+
+The module registers `/dev/kineplex` with a `.uring_cmd` file-operation. Userspace opens this device and submits `IORING_OP_URING_CMD` SQEs with `sqe->cmd_op = IORING_OP_KINEPLEX_ROUTE`; the route payload is copied into the command PDU, deferred with `io_uring_cmd_complete_in_task()`, and completed with `io_uring_cmd_done()` directly into the ring CQ.
+
+A loadable module cannot safely mutate the upstream kernel's private opcode dispatch table. The command selector therefore uses the supported `IORING_OP_URING_CMD` extension point while retaining the stable KinePlex selector `IORING_OP_KINEPLEX_ROUTE`. This avoids an invasive kernel fork and preserves the single SQ/CQ notification path.

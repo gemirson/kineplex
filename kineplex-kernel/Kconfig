@@ -1,8 +1,17 @@
 config KINEPLEX
 	tristate "KinePlex geometry driver"
 	depends on X86_64 || ARM64
+	depends on IO_URING
 	help
 	  Asynchronous fixed-point geometry and geodesic solver for KinePlex.
+
+config KINEPLEX_IO_URING
+	bool "KinePlex io_uring command path"
+	depends on KINEPLEX
+	depends on IO_URING
+	default y
+	help
+	  Expose route submissions through IORING_OP_URING_CMD.
 
 config KINEPLEX_KUNIT_TEST
 	tristate "KinePlex KUnit tests"

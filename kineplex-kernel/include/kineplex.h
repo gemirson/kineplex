@@ -10,6 +10,7 @@
 #define KINEPLEX_GEOMETRY_DIM 3
 #define KINEPLEX_MAX_GEODESIC_STEPS 4096
 #define KINEPLEX_HOMOTOPY_MAX_WAYPOINTS 64
+#define IORING_OP_KINEPLEX_ROUTE 0x4b50
 
 /* All geometry values use signed Q16.16 fixed-point representation. */
 struct kineplex_telemetry {
@@ -44,6 +45,15 @@ struct kineplex_homotopy {
 	u16 waypoint_count;
 	s64 waypoints[KINEPLEX_HOMOTOPY_MAX_WAYPOINTS][KINEPLEX_GEOMETRY_DIM];
 };
+
+struct kineplex_route_request {
+	u64 edge_id;
+	u64 target_node;
+	s64 resistance_q16;
+};
+
+int kineplex_uring_init(void);
+void kineplex_uring_exit(void);
 
 int kineplex_homotopy_init(void);
 void kineplex_homotopy_exit(void);

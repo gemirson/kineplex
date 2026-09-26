@@ -16,13 +16,20 @@ static int __init kineplex_init(void)
 		kineplex_geometry_exit();
 		return ret;
 	}
+	ret = kineplex_uring_init();
+	if (ret) {
+		kineplex_homotopy_exit();
+		kineplex_geometry_exit();
+		return ret;
+	}
 
-	pr_info("kineplex: geometry workqueue and homotopy slab initialized\n");
+	pr_info("kineplex: geometry, homotopy slab, and io_uring command path initialized\n");
 	return 0;
 }
 
 static void __exit kineplex_exit(void)
 {
+	kineplex_uring_exit();
 	kineplex_homotopy_exit();
 	kineplex_geometry_exit();
 	pr_info("kineplex: unloaded\n");
