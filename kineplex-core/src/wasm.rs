@@ -309,43 +309,61 @@ impl WasmRuntime {
         let descriptor_pointer = allocator
             .call(&mut store, descriptor.len() as i32)
             .map_err(WasmExecutionError::Trap)?;
-        write_guest_memory(&memory, &mut store, input_pointer, &input_bytes)?;
-        write_guest_memory(&memory, &mut store, descriptor_pointer, &descriptor)?;
+        let mut output_allocation = None;
+        let result = (|| {
+            write_guest_memory(&memory, &mut store, input_pointer, &input_bytes)?;
+            write_guest_memory(&memory, &mut store, descriptor_pointer, &descriptor)?;
+            let run = instance
+                .get_typed_func::<(i32, i32), i32>(&mut store, "kineplex_run")
+                .map_err(WasmExecutionError::Export)?;
+            let output_pointer = run
+                .call(&mut store, (input_pointer, descriptor_pointer))
+                .map_err(WasmExecutionError::Trap)?;
+            let size_function = instance
+                .get_typed_func::<(), i32>(&mut store, "kineplex_result_size")
+                .map_err(WasmExecutionError::Export)?;
+            let output_size = size_function
+                .call(&mut store, ())
+                .map_err(WasmExecutionError::Trap)?;
+            if output_size < 0 || output_size as usize > MAX_WASM_MEMORY_BYTES {
+                return Err(WasmExecutionError::Abi(
+                    "guest returned an invalid Arrow IPC result size".to_owned(),
+                ));
+            }
+            output_allocation = Some((output_pointer, output_size));
+            let mut output_bytes = vec![0; output_size as usize];
+            read_guest_memory(&memory, &store, output_pointer, &mut output_bytes)?;
+            let mut reader = StreamReader::try_new(std::io::Cursor::new(output_bytes), None)
+                .map_err(|error| WasmExecutionError::Abi(error.to_string()))?;
+            let batch = reader
+                .next()
+                .transpose()
+                .map_err(|error| WasmExecutionError::Abi(error.to_string()))?
+                .ok_or_else(|| {
+                    WasmExecutionError::Abi("guest returned no Arrow record batch".to_owned())
+                })?;
+            if reader.next().is_some() {
+                return Err(WasmExecutionError::Abi(
+                    "guest must return exactly one Arrow record batch".to_owned(),
+                ));
+            }
+            Ok(batch)
+        })();
 
-        let run = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "kineplex_run")
-            .map_err(WasmExecutionError::Export)?;
-        let output_pointer = run
-            .call(&mut store, (input_pointer, descriptor_pointer))
-            .map_err(WasmExecutionError::Trap)?;
-        let size_function = instance
-            .get_typed_func::<(), i32>(&mut store, "kineplex_result_size")
-            .map_err(WasmExecutionError::Export)?;
-        let output_size = size_function
-            .call(&mut store, ())
-            .map_err(WasmExecutionError::Trap)?;
-        if output_size < 0 || output_size as usize > MAX_WASM_MEMORY_BYTES {
-            return Err(WasmExecutionError::Abi(
-                "guest returned an invalid Arrow IPC result size".to_owned(),
-            ));
+        if let Ok(deallocate) = instance.get_typed_func::<(i32, i32), ()>(&mut store, "free_ffi") {
+            if let Some((pointer, size)) = output_allocation {
+                if pointer != input_pointer && pointer != descriptor_pointer {
+                    let _ = deallocate.call(&mut store, (pointer, size));
+                }
+            }
+            if Some(input_pointer) != output_allocation.map(|(pointer, _)| pointer) {
+                let _ = deallocate.call(&mut store, (input_pointer, input_len));
+            }
+            if Some(descriptor_pointer) != output_allocation.map(|(pointer, _)| pointer) {
+                let _ = deallocate.call(&mut store, (descriptor_pointer, descriptor.len() as i32));
+            }
         }
-        let mut output_bytes = vec![0; output_size as usize];
-        read_guest_memory(&memory, &store, output_pointer, &mut output_bytes)?;
-        let mut reader = StreamReader::try_new(std::io::Cursor::new(output_bytes), None)
-            .map_err(|error| WasmExecutionError::Abi(error.to_string()))?;
-        let batch = reader
-            .next()
-            .transpose()
-            .map_err(|error| WasmExecutionError::Abi(error.to_string()))?
-            .ok_or_else(|| {
-                WasmExecutionError::Abi("guest returned no Arrow record batch".to_owned())
-            })?;
-        if reader.next().is_some() {
-            return Err(WasmExecutionError::Abi(
-                "guest must return exactly one Arrow record batch".to_owned(),
-            ));
-        }
-        Ok(batch)
+        result
     }
 
     fn new_store(
