@@ -27,9 +27,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-const GRAPH_BODY_LIMIT_BYTES: usize = 1_048_576;
+const GRAPH_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const GRAPH_READ_TIMEOUT: Duration = Duration::from_secs(2);
-const ALLOCATION_ACCEPT_TIMEOUT: Duration = Duration::from_millis(500);
+const ALLOCATION_ACCEPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Raw graph payload accepted by the Control Plane.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -417,7 +417,11 @@ async fn allocate_graph(
 ) -> Result<(), String> {
     let stages = graph.stage_ids();
     let candidates = routing_table.get_best_nodes(routing_table.len());
+    if candidates.is_empty() {
+        return Err("no eligible nodes are available for graph allocation".to_owned());
+    }
     let mut assigned = Vec::new();
+    let mut previous_node = None;
 
     for (stage_index, stage_id) in stages.iter().enumerate() {
         let wasm = graph
@@ -426,16 +430,12 @@ async fn allocate_graph(
             .and_then(serde_json::Value::as_str)
             .unwrap_or("pending")
             .to_owned();
-        let listen_to = assigned.last().copied();
+        let listen_to = previous_node;
         let mut accepted = false;
 
-        for candidate in candidates.iter().skip(stage_index) {
-            if assigned
-                .iter()
-                .any(|assigned_node| assigned_node == candidate)
-            {
-                continue;
-            }
+        let first_candidate = stage_index % candidates.len();
+        for offset in 0..candidates.len() {
+            let candidate = &candidates[(first_candidate + offset) % candidates.len()];
             let target = control_addr(*candidate)?;
             let request = AllocationRequest {
                 allocation_id,
@@ -446,7 +446,10 @@ async fn allocate_graph(
             match send_control_request(target, "/allocate_step", &request).await {
                 Ok(()) => {
                     tracing::info!(step = %stage_id, node = %candidate, "step assigned");
-                    assigned.push(*candidate);
+                    if !assigned.contains(candidate) {
+                        assigned.push(*candidate);
+                    }
+                    previous_node = Some(*candidate);
                     accepted = true;
                     break;
                 }
