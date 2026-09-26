@@ -8,6 +8,7 @@ pub mod egress;
 pub mod physical_plan;
 pub mod spike_tap;
 pub mod receptor;
+pub mod reliability;
 pub mod terminal;
 pub mod graph;
 pub mod geometry;
