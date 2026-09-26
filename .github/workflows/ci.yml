@@ -3,9 +3,14 @@ name: KinePlex CI
 on:
   push:
     branches:
+      - 'feat/**'
+      - develop
+      - homolog
       - main
   pull_request:
     branches:
+      - develop
+      - homolog
       - main
   workflow_dispatch:
 
@@ -17,6 +22,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  branch-flow:
+    name: Branch flow policy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate promotion direction
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          case "${BASE_BRANCH}:${HEAD_BRANCH}" in
+            develop:feat/*)
+              echo "Allowed promotion: ${HEAD_BRANCH} -> develop"
+              ;;
+            homolog:develop)
+              echo "Allowed promotion: develop -> homolog"
+              ;;
+            main:homolog)
+              echo "Allowed promotion: homolog -> main"
+              ;;
+            *)
+              echo "Invalid promotion: ${HEAD_BRANCH} -> ${BASE_BRANCH}"
+              echo "Expected feat/* -> develop -> homolog -> main"
+              exit 1
+              ;;
+          esac
+
   rust:
     name: Rust build and tests
     runs-on: ubuntu-latest
@@ -39,8 +73,20 @@ jobs:
           rustc --version --verbose
           cargo --version
 
-      - name: Build and test workspace
+      - name: Run complete workspace test set
         run: cargo test --workspace --locked
+
+      - name: Run geometry stress test
+        run: cargo test -p kineplex-core --test geometry_stress --locked
+
+      - name: Run zero-allocation geometry test
+        run: cargo test -p kineplex-core --test geometry_allocations --locked
+
+      - name: Run deformation stress test
+        run: cargo test -p kineplex-core --test geometry_deformation_stress --locked
+
+      - name: Run plane-isolation tests
+        run: cargo test -p kineplex-core --test plane_isolation_io_contamination --locked
 
   python:
     name: E2E harness syntax
