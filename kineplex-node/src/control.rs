@@ -7,12 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Json, Query, Request};
+use axum::extract::{DefaultBodyLimit, Json, Path, Query, Request};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{serve, Router};
+use dashmap::DashMap;
 use futures_util::stream;
 use kineplex_core::graph::KineGraph;
 use kineplex_core::spike_tap::{SpikeTap, TappedSpike};
@@ -97,6 +98,13 @@ struct AllocationResponse {
 #[derive(Clone)]
 struct ControlState {
     routing_table: RoutingTable,
+    graph_status: Arc<DashMap<Uuid, String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GraphStatusResponse {
+    graph_id: Uuid,
+    status: String,
 }
 
 /// Error returned while binding or stopping the Control Plane server.
@@ -151,7 +159,10 @@ impl ControlServer {
             .local_addr()
             .map_err(|error| ControlServerError::Server(error.to_string()))?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let state = Arc::new(ControlState { routing_table });
+        let state = Arc::new(ControlState {
+            routing_table,
+            graph_status: Arc::new(DashMap::new()),
+        });
         let task = tokio::spawn(async move {
             serve(listener, router(state))
                 .with_graceful_shutdown(async {
@@ -188,6 +199,7 @@ fn router(state: Arc<ControlState>) -> Router {
     Router::new()
         .route("/submit_graph", post(submit_graph))
         .route("/tap", get(subscribe_tapping))
+        .route("/graph_status/:graph_id", get(graph_status))
         .route("/allocate_step", post(allocate_step))
         .route("/cancel_allocation", post(cancel_allocation))
         .with_state(state)
@@ -220,6 +232,26 @@ async fn subscribe_tapping(Query(query): Query<TappingQuery>) -> Response {
             .expect("static content type is valid"),
     );
     response
+}
+
+async fn graph_status(
+    axum::extract::State(state): axum::extract::State<Arc<ControlState>>,
+    Path(graph_id): Path<Uuid>,
+) -> Response {
+    match state.graph_status.get(&graph_id) {
+        Some(status) => Json(GraphStatusResponse {
+            graph_id,
+            status: status.clone(),
+        })
+        .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("graph {graph_id} was not found"),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 fn tapping_json_line(event: &TappedSpike) -> Vec<u8> {
@@ -258,9 +290,11 @@ async fn submit_graph(
         Err(error) => return bad_request(format!("invalid graph: {error}")),
     };
     let graph_id = Uuid::new_v4();
+    state.graph_status.insert(graph_id, "ALLOCATING".to_owned());
 
     if !state.routing_table.is_empty() {
         if let Err(error) = allocate_graph(graph_id, &graph, &state.routing_table).await {
+            state.graph_status.insert(graph_id, "FAILED".to_owned());
             tracing::error!(%graph_id, %error, "graph allocation failed; rollback completed");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -270,6 +304,7 @@ async fn submit_graph(
         }
     }
 
+    state.graph_status.insert(graph_id, "RUNNING".to_owned());
     tracing::info!(
         %graph_id,
         client_id = %payload.client_id,

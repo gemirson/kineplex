@@ -1,0 +1,23 @@
+[package]
+name = "kineplex-cli"
+description = "Submit KinePlex graph jobs to a seed node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kineplex-cli"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+clap = { version = "=4.4.18", default-features = false, features = ["derive", "error-context", "help", "std", "usage"] }
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
