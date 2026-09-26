@@ -356,6 +356,21 @@ impl AtomicGeodesicTable {
         self.current.store(Arc::new(snapshot));
     }
 
+    /// Replaces one route entry by cloning and atomically publishing a Control Plane snapshot.
+    pub fn update_route(&self, edge: RouteKey, route: RouteEntry) -> bool {
+        let active = self.current.load_full();
+        if !active.routes.contains_key(&edge) {
+            return false;
+        }
+        let mut routes = active.routes.clone();
+        routes.insert(edge, route);
+        self.publish(RouteSnapshot {
+            revision: active.revision.wrapping_add(1),
+            routes,
+        });
+        true
+    }
+
     /// Copies a route entry from the active snapshot without allocating or taking a lock.
     #[must_use]
     pub fn lookup(&self, edge: RouteKey) -> Option<RouteEntry> {
@@ -365,6 +380,45 @@ impl AtomicGeodesicTable {
     #[must_use]
     pub fn revision(&self) -> u64 {
         self.current.load().revision
+    }
+}
+
+/// QUIC transport feedback sampled from one edge's connection statistics.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct QuicTransportFeedback {
+    pub smoothed_rtt_ms: f64,
+    pub congestion_window_bytes: u64,
+    pub packets_sent: u64,
+    pub packets_lost: u64,
+}
+
+/// Applies QUIC latency, loss, and window pressure to geodesic edge resistance.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CongestionMetricAdapter;
+
+impl CongestionMetricAdapter {
+    pub fn update(
+        &self,
+        routes: &AtomicGeodesicTable,
+        edge: RouteKey,
+        feedback: QuicTransportFeedback,
+    ) -> bool {
+        let Some(mut route) = routes.lookup(edge) else {
+            return false;
+        };
+        let loss_ratio = if feedback.packets_sent == 0 {
+            0.0
+        } else {
+            (feedback.packets_lost as f64 / feedback.packets_sent as f64).clamp(0.0, 1.0)
+        };
+        let congestion = if feedback.congestion_window_bytes >= 64 * 1024 {
+            0.0
+        } else {
+            1.0 - feedback.congestion_window_bytes as f64 / (64 * 1024) as f64
+        };
+        let sample_cost = feedback.smoothed_rtt_ms.max(0.0) * 0.01 + loss_ratio * 10.0 + congestion;
+        route.resistance = (route.resistance * 0.75 + sample_cost * 0.25).max(0.0);
+        routes.update_route(edge, route)
     }
 }
 
@@ -559,8 +613,9 @@ fn add_scaled(state: GeodesicState, derivative: GeodesicState, scale: f64) -> Ge
 mod tests {
     use super::{
         metric_norm_squared, metric_norm_squared_scalar, AtomicGeodesicTable, ChristoffelSymbols,
-        CurvatureMonitor, GeodesicIntegrator, GeodesicState, LocalAtlas, LocalChart, MetricSample,
-        MetricTensor, MetricWorker, RouteEntry, RouteSnapshot,
+        CongestionMetricAdapter, CurvatureMonitor, GeodesicIntegrator, GeodesicState, LocalAtlas,
+        LocalChart, MetricSample, MetricTensor, MetricWorker, QuicTransportFeedback, RouteEntry,
+        RouteSnapshot,
     };
     use std::time::Duration;
 
@@ -698,5 +753,32 @@ mod tests {
         }
         assert!(fine.position[0].is_finite());
         assert!(fine.tangent[0] > 0.0 && fine.tangent[0] < 1.0);
+    }
+
+    #[test]
+    fn quic_loss_and_latency_raise_edge_resistance() {
+        let table = AtomicGeodesicTable::new(RouteSnapshot {
+            revision: 1,
+            routes: [(
+                1,
+                RouteEntry {
+                    next_node: 2,
+                    resistance: 1.0,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        });
+        assert!(CongestionMetricAdapter.update(
+            &table,
+            1,
+            QuicTransportFeedback {
+                smoothed_rtt_ms: 150.0,
+                congestion_window_bytes: 1024,
+                packets_sent: 100,
+                packets_lost: 15,
+            }
+        ));
+        assert!(table.lookup(1).expect("route remains available").resistance > 1.0);
     }
 }
