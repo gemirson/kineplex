@@ -483,12 +483,84 @@ impl CurvatureMonitor {
     }
 }
 
+/// Three-dimensional Christoffel symbols for a local chart.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ChristoffelSymbols {
+    pub values: [[[f64; 3]; 3]; 3],
+}
+
+/// Position and tangent vector for a geodesic ODE integration state.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GeodesicState {
+    pub position: [f64; 3],
+    pub tangent: [f64; 3],
+}
+
+/// One fixed-step fourth-order Runge-Kutta geodesic integrator.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GeodesicIntegrator;
+
+impl GeodesicIntegrator {
+    /// Advances one geodesic state by `step_size` using RK4 and no heap allocation.
+    #[must_use]
+    pub fn step(
+        symbols: &ChristoffelSymbols,
+        state: GeodesicState,
+        step_size: f64,
+    ) -> GeodesicState {
+        let k1 = derivative(symbols, state);
+        let k2 = derivative(symbols, add_scaled(state, k1, step_size * 0.5));
+        let k3 = derivative(symbols, add_scaled(state, k2, step_size * 0.5));
+        let k4 = derivative(symbols, add_scaled(state, k3, step_size));
+        let mut result = state;
+        for axis in 0..3 {
+            result.position[axis] += step_size / 6.0
+                * (k1.position[axis]
+                    + 2.0 * k2.position[axis]
+                    + 2.0 * k3.position[axis]
+                    + k4.position[axis]);
+            result.tangent[axis] += step_size / 6.0
+                * (k1.tangent[axis]
+                    + 2.0 * k2.tangent[axis]
+                    + 2.0 * k3.tangent[axis]
+                    + k4.tangent[axis]);
+        }
+        result
+    }
+}
+
+fn derivative(symbols: &ChristoffelSymbols, state: GeodesicState) -> GeodesicState {
+    let mut acceleration = [0.0; 3];
+    for (upper, component) in acceleration.iter_mut().enumerate() {
+        for first in 0..3 {
+            for second in 0..3 {
+                *component -= symbols.values[upper][first][second]
+                    * state.tangent[first]
+                    * state.tangent[second];
+            }
+        }
+    }
+    GeodesicState {
+        position: state.tangent,
+        tangent: acceleration,
+    }
+}
+
+fn add_scaled(state: GeodesicState, derivative: GeodesicState, scale: f64) -> GeodesicState {
+    let mut result = state;
+    for axis in 0..3 {
+        result.position[axis] += derivative.position[axis] * scale;
+        result.tangent[axis] += derivative.tangent[axis] * scale;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        metric_norm_squared, metric_norm_squared_scalar, AtomicGeodesicTable, CurvatureMonitor,
-        LocalAtlas, LocalChart, MetricSample, MetricTensor, MetricWorker, RouteEntry,
-        RouteSnapshot,
+        metric_norm_squared, metric_norm_squared_scalar, AtomicGeodesicTable, ChristoffelSymbols,
+        CurvatureMonitor, GeodesicIntegrator, GeodesicState, LocalAtlas, LocalChart, MetricSample,
+        MetricTensor, MetricWorker, RouteEntry, RouteSnapshot,
     };
     use std::time::Duration;
 
@@ -606,5 +678,25 @@ mod tests {
             .expect("curvature exceeds threshold");
         assert!(invalidation.curvature > 1.0);
         assert!(atlas.get(9).is_none());
+    }
+
+    #[test]
+    fn rk4_geodesic_is_stable_for_flat_and_constant_curvature_cases() {
+        let initial = GeodesicState {
+            position: [0.0; 3],
+            tangent: [1.0, 0.0, 0.0],
+        };
+        let flat = GeodesicIntegrator::step(&ChristoffelSymbols::default(), initial, 0.1);
+        assert!((flat.position[0] - 0.1).abs() < 1e-12);
+        assert_eq!(flat.tangent, initial.tangent);
+
+        let mut symbols = ChristoffelSymbols::default();
+        symbols.values[0][0][0] = 0.05;
+        let mut fine = initial;
+        for _ in 0..100 {
+            fine = GeodesicIntegrator::step(&symbols, fine, 0.001);
+        }
+        assert!(fine.position[0].is_finite());
+        assert!(fine.tangent[0] > 0.0 && fine.tangent[0] < 1.0);
     }
 }
