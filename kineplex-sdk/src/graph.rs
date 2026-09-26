@@ -10,6 +10,28 @@ pub enum NativeOperator {
     FilterGreaterThanF32 { column: String, threshold: f32 },
 }
 
+/// Client-declared topological constraints checked before submission.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphInvariant {
+    PreserveOrder,
+    MaxDeformation { tolerance: f64 },
+    MaxRouteResistance { maximum: f64 },
+}
+
+impl GraphInvariant {
+    fn to_json(&self) -> Value {
+        match self {
+            Self::PreserveOrder => json!({ "kind": "preserve_order" }),
+            Self::MaxDeformation { tolerance } => {
+                json!({ "kind": "max_deformation", "tolerance": tolerance })
+            }
+            Self::MaxRouteResistance { maximum } => {
+                json!({ "kind": "max_route_resistance", "maximum": maximum })
+            }
+        }
+    }
+}
+
 /// Fluent DAG builder. Pipeline methods link each new stage to the prior stage.
 #[derive(Debug, Default)]
 pub struct KineGraph {
@@ -17,6 +39,7 @@ pub struct KineGraph {
     edges: Vec<Value>,
     previous: Option<String>,
     next_id: usize,
+    invariants: Vec<GraphInvariant>,
 }
 
 impl KineGraph {
@@ -55,12 +78,24 @@ impl KineGraph {
         self
     }
 
+    /// Adds a topological invariant that must hold before the payload is emitted.
+    pub fn invariant(mut self, invariant: GraphInvariant) -> Self {
+        self.invariants.push(invariant);
+        self
+    }
+
     /// Validates the topology and returns the standard JSON graph payload.
     pub fn build(self) -> Result<GraphPayload, GraphBuildError> {
         validate_dag(&self.nodes, &self.edges)?;
+        validate_invariants(&self.nodes, &self.edges, &self.invariants)?;
         Ok(GraphPayload {
             nodes: self.nodes,
             edges: self.edges,
+            invariants: self
+                .invariants
+                .iter()
+                .map(GraphInvariant::to_json)
+                .collect(),
         })
     }
 
@@ -83,6 +118,7 @@ impl KineGraph {
             edges: std::mem::take(&mut self.edges),
             previous: self.previous.take(),
             next_id: std::mem::take(&mut self.next_id),
+            invariants: std::mem::take(&mut self.invariants),
         }
     }
 }
@@ -92,15 +128,16 @@ impl KineGraph {
 pub struct GraphPayload {
     pub nodes: Vec<Value>,
     pub edges: Vec<Value>,
+    pub invariants: Vec<Value>,
 }
 
 impl GraphPayload {
     pub fn to_json(&self) -> Value {
-        json!({ "nodes": self.nodes, "edges": self.edges })
+        json!({ "nodes": self.nodes, "edges": self.edges, "invariants": self.invariants })
     }
 
     pub fn into_json(self) -> Value {
-        json!({ "nodes": self.nodes, "edges": self.edges })
+        json!({ "nodes": self.nodes, "edges": self.edges, "invariants": self.invariants })
     }
 }
 
@@ -110,6 +147,7 @@ pub enum GraphBuildError {
     UnknownEndpoint(String),
     Cycle,
     OrphanNode(String),
+    InvalidInvariant(String),
 }
 
 impl std::fmt::Display for GraphBuildError {
@@ -119,8 +157,50 @@ impl std::fmt::Display for GraphBuildError {
             Self::UnknownEndpoint(id) => write!(f, "edge references unknown stage {id:?}"),
             Self::Cycle => f.write_str("graph contains a directed cycle"),
             Self::OrphanNode(id) => write!(f, "stage {id:?} is disconnected from the graph"),
+            Self::InvalidInvariant(reason) => write!(f, "graph invariant failed: {reason}"),
         }
     }
+}
+
+fn validate_invariants(
+    nodes: &[Value],
+    edges: &[Value],
+    invariants: &[GraphInvariant],
+) -> Result<(), GraphBuildError> {
+    for invariant in invariants {
+        match invariant {
+            GraphInvariant::PreserveOrder => {
+                let expected = nodes.windows(2).all(|pair| {
+                    let source = pair[0].get("id").and_then(Value::as_str);
+                    let target = pair[1].get("id").and_then(Value::as_str);
+                    edges.iter().any(|edge| {
+                        edge["source"].as_str() == source && edge["target"].as_str() == target
+                    })
+                });
+                if !expected {
+                    return Err(GraphBuildError::InvalidInvariant(
+                        "preserve_order requires an edge between each adjacent stage".to_owned(),
+                    ));
+                }
+            }
+            GraphInvariant::MaxDeformation { tolerance }
+                if !tolerance.is_finite() || *tolerance < 0.0 =>
+            {
+                return Err(GraphBuildError::InvalidInvariant(
+                    "max_deformation must be a finite non-negative value".to_owned(),
+                ));
+            }
+            GraphInvariant::MaxRouteResistance { maximum }
+                if !maximum.is_finite() || *maximum < 0.0 =>
+            {
+                return Err(GraphBuildError::InvalidInvariant(
+                    "max_route_resistance must be a finite non-negative value".to_owned(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 impl std::error::Error for GraphBuildError {}
@@ -194,7 +274,7 @@ fn visit<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphBuildError, KineGraph, NativeOperator};
+    use super::{GraphBuildError, GraphInvariant, KineGraph, NativeOperator};
 
     #[test]
     fn fluent_pipeline_links_stages_and_builds_json() {
@@ -205,11 +285,14 @@ mod tests {
                 column: "score".into(),
                 threshold: 10.0,
             })
+            .invariant(GraphInvariant::PreserveOrder)
+            .invariant(GraphInvariant::MaxDeformation { tolerance: 0.1 })
             .terminal("s3://bucket/output/")
             .build()
             .expect("linear graph is acyclic");
         assert_eq!(payload.nodes.len(), 4);
         assert_eq!(payload.edges.len(), 3);
+        assert_eq!(payload.invariants.len(), 2);
         assert_eq!(payload.to_json()["nodes"][1]["wasm"], "filter.wasm");
     }
 
@@ -221,5 +304,16 @@ mod tests {
             .build()
             .expect_err("self-edge cycles");
         assert_eq!(error, GraphBuildError::Cycle);
+    }
+
+    #[test]
+    fn invalid_numeric_invariant_is_rejected_before_submission() {
+        let error = KineGraph::new()
+            .receptor("input")
+            .terminal("output")
+            .invariant(GraphInvariant::MaxRouteResistance { maximum: f64::NAN })
+            .build()
+            .expect_err("NaN is not a valid invariant threshold");
+        assert!(matches!(error, GraphBuildError::InvalidInvariant(_)));
     }
 }

@@ -41,6 +41,9 @@ pub struct SubmitGraphRequest {
     pub nodes: Vec<serde_json::Value>,
     /// Raw directed graph edge definitions.
     pub edges: Vec<serde_json::Value>,
+    /// Optional geometric and ordering constraints.
+    #[serde(default)]
+    pub invariants: Vec<serde_json::Value>,
 }
 
 impl SubmitGraphRequest {
@@ -343,6 +346,11 @@ async fn submit_graph(
         Ok(graph) => graph,
         Err(error) => return bad_request(format!("invalid graph: {error}")),
     };
+    if let Err(error) =
+        validate_graph_invariants(&payload.nodes, &payload.edges, &payload.invariants)
+    {
+        return bad_request(format!("invalid graph invariant: {error}"));
+    }
     let graph_id = Uuid::new_v4();
     kineplex_core::metrics::global().set_topology(state.routing_table.len(), graph.edge_count(), 0);
     state.graph_status.insert(graph_id, "ALLOCATING".to_owned());
@@ -536,6 +544,50 @@ fn bad_request(error: String) -> Response {
     (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response()
 }
 
+fn validate_graph_invariants(
+    nodes: &[serde_json::Value],
+    edges: &[serde_json::Value],
+    invariants: &[serde_json::Value],
+) -> Result<(), String> {
+    for invariant in invariants {
+        let kind = invariant
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "each invariant must have a string kind".to_owned())?;
+        match kind {
+            "preserve_order" => {
+                let ordered = nodes.windows(2).all(|pair| {
+                    let source = pair[0].get("id").and_then(serde_json::Value::as_str);
+                    let target = pair[1].get("id").and_then(serde_json::Value::as_str);
+                    edges.iter().any(|edge| {
+                        edge.get("source").and_then(serde_json::Value::as_str) == source
+                            && edge.get("target").and_then(serde_json::Value::as_str) == target
+                    })
+                });
+                if !ordered {
+                    return Err("preserve_order requires edges between adjacent stages".to_owned());
+                }
+            }
+            "max_deformation" | "max_route_resistance" => {
+                let field = if kind == "max_deformation" {
+                    "tolerance"
+                } else {
+                    "maximum"
+                };
+                let value = invariant
+                    .get(field)
+                    .and_then(serde_json::Value::as_f64)
+                    .ok_or_else(|| format!("{kind} requires numeric {field}"))?;
+                if !value.is_finite() || value < 0.0 {
+                    return Err(format!("{field} must be finite and non-negative"));
+                }
+            }
+            _ => return Err(format!("unsupported invariant kind {kind:?}")),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::SubmitGraphRequest;
@@ -547,6 +599,7 @@ mod tests {
             client_id: "app_bi_01".to_owned(),
             nodes: vec![json!({"id": "source"})],
             edges: Vec::new(),
+            invariants: Vec::new(),
         };
         assert!(request.validate().is_ok());
     }
@@ -557,6 +610,7 @@ mod tests {
             client_id: " ".to_owned(),
             nodes: vec![json!({})],
             edges: Vec::new(),
+            invariants: Vec::new(),
         };
         assert_eq!(empty_client.validate(), Err("client_id must not be empty"));
 
@@ -564,6 +618,7 @@ mod tests {
             client_id: "client".to_owned(),
             nodes: Vec::new(),
             edges: Vec::new(),
+            invariants: Vec::new(),
         };
         assert_eq!(
             empty_nodes.validate(),

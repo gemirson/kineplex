@@ -9,7 +9,7 @@ pub mod graph;
 
 pub mod prelude {
     pub use crate::arrow::{KineColumnExt, KineRecordBatchBuilder};
-    pub use crate::graph::{KineGraph, NativeOperator};
+    pub use crate::graph::{GraphInvariant, KineGraph, NativeOperator};
     pub use crate::synapse;
     pub use arrow::array::RecordBatch;
 }
