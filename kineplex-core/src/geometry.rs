@@ -423,11 +423,72 @@ impl LocalAtlas {
     }
 }
 
+/// Request emitted when local curvature invalidates a chart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AtlasInvalidation {
+    pub chart_id: ChartId,
+    pub curvature: f64,
+    pub atlas_revision: u64,
+}
+
+/// Threshold monitor that synchronously removes charts at or above the limit.
+pub struct CurvatureMonitor {
+    threshold: f64,
+    revision: std::sync::atomic::AtomicU64,
+}
+
+impl CurvatureMonitor {
+    pub fn new(threshold: f64) -> Result<Self, &'static str> {
+        if !threshold.is_finite() || threshold <= 0.0 {
+            return Err("curvature threshold must be a positive finite value");
+        }
+        Ok(Self {
+            threshold,
+            revision: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+
+    /// Computes a tensor norm bound and removes a chart synchronously if it is over threshold.
+    pub fn observe(
+        &self,
+        chart_id: ChartId,
+        riemann_components: &[f64],
+        atlas: &LocalAtlas,
+    ) -> Option<AtlasInvalidation> {
+        let curvature = riemann_components.iter().fold(0.0_f64, |norm, value| {
+            if value.is_finite() {
+                norm.hypot(*value)
+            } else {
+                f64::INFINITY
+            }
+        });
+        if curvature < self.threshold || atlas.remove(chart_id).is_none() {
+            return None;
+        }
+        let atlas_revision = self
+            .revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        tracing::warn!(
+            chart_id,
+            curvature,
+            atlas_revision,
+            "invalidated atlas chart above curvature threshold"
+        );
+        Some(AtlasInvalidation {
+            chart_id,
+            curvature,
+            atlas_revision,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        metric_norm_squared, metric_norm_squared_scalar, AtomicGeodesicTable, LocalAtlas,
-        LocalChart, MetricSample, MetricTensor, MetricWorker, RouteEntry, RouteSnapshot,
+        metric_norm_squared, metric_norm_squared_scalar, AtomicGeodesicTable, CurvatureMonitor,
+        LocalAtlas, LocalChart, MetricSample, MetricTensor, MetricWorker, RouteEntry,
+        RouteSnapshot,
     };
     use std::time::Duration;
 
@@ -528,5 +589,22 @@ mod tests {
             let vectorized = metric_norm_squared(&metric, point);
             assert!((scalar - vectorized).abs() < 1e-10);
         }
+    }
+
+    #[test]
+    fn high_curvature_invalidates_a_local_chart_immediately() {
+        let atlas = LocalAtlas::new();
+        atlas.insert(LocalChart {
+            id: 9,
+            center: [0.0; 3],
+            scale: [1.0; 3],
+            overlap_radius: 1.0,
+        });
+        let monitor = CurvatureMonitor::new(1.0).expect("valid threshold");
+        let invalidation = monitor
+            .observe(9, &[0.8, 0.8], &atlas)
+            .expect("curvature exceeds threshold");
+        assert!(invalidation.curvature > 1.0);
+        assert!(atlas.get(9).is_none());
     }
 }
