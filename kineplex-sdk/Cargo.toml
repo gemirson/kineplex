@@ -1,0 +1,17 @@
+[package]
+name = "kineplex-sdk"
+description = "Safe Arrow and graph-building APIs for KinePlex users"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+arrow.workspace = true
+kineplex-sdk-macros = { path = "../kineplex-sdk-macros" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

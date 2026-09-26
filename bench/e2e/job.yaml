@@ -1,0 +1,27 @@
+client_id: kineplex-e2e-benchmark
+nodes:
+  - id: source
+    kind: receptor
+    source: /benchmark/input.parquet
+  - id: filter-a
+    kind: wasm
+    wasm: wasm_filters/target/wasm32-unknown-unknown/release/filter_gt_10.wasm
+  - id: filter-b
+    kind: wasm
+    wasm: wasm_filters/target/wasm32-unknown-unknown/release/filter_gt_20.wasm
+  - id: filter-c
+    kind: wasm
+    wasm: wasm_filters/target/wasm32-unknown-unknown/release/filter_gt_30.wasm
+  - id: aggregate
+    kind: native
+    operator: sum_f64
+    column: score
+  - id: terminal
+    kind: terminal
+    destination: /benchmark/output/
+edges:
+  - { source: source, target: filter-a }
+  - { source: filter-a, target: filter-b }
+  - { source: filter-b, target: filter-c }
+  - { source: filter-c, target: aggregate }
+  - { source: aggregate, target: terminal }

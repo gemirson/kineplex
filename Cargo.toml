@@ -1,0 +1,56 @@
+[workspace]
+members = ["kineplex-core", "kineplex-net", "kineplex-node", "kineplex-sdk", "kineplex-sdk-macros", "kineplex-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "AGPL-3.0-only"
+authors = ["Gemirson dos Santos Silva & Engineering Team"]
+repository = "https://github.com/gemirson/kineplex"
+
+[workspace.dependencies]
+arrow = { version = "=51.0.0", features = ["ffi"] }
+arc-swap = "=1.7.1"
+chrono = "=0.4.34"
+criterion = "=0.5.1"
+axum = { version = "=0.7.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+base64 = "=0.22.1"
+uuid = { version = "=1.4.0", features = ["serde", "v4"] }
+bytes = "=1.12.1"
+dashmap = { version = "=5.5.3", default-features = false }
+flatbuffers = "=23.5.26"
+flatc-rust = "=0.2.0"
+foca = { version = "=0.10.0", features = ["postcard-codec", "std", "tracing"] }
+futures-util = "=0.3.31"
+libc = "=0.2.189"
+parquet = { version = "=51.0.0", features = ["arrow", "async"] }
+petgraph = { version = "=0.6.5", default-features = false }
+pprof = { version = "=0.13.0", default-features = false, features = ["flamegraph"] }
+quiche = { version = "0.30.0", default-features = false, features = ["boringssl-boring-crate"] }
+rcgen = "=0.11.0"
+ring = "=0.17.5"
+rand = "=0.8.5"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+serde_yaml = "=0.9.34"
+sysinfo = { version = "=0.30.13", default-features = false }
+time = "=0.3.36"
+tokio = { version = "=1.35.1", features = ["fs", "io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+tracing = "=0.1.41"
+tracing-appender = { version = "=0.2.3", default-features = false }
+tracing-subscriber = { version = "=0.3.19", default-features = false, features = ["env-filter", "fmt", "json"] }
+wasmtime = { version = "=18.0.4", default-features = false, features = ["cranelift", "runtime"] }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+
+[profile.release]
+debug = 1
