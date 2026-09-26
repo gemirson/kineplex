@@ -229,3 +229,55 @@ impl From<ParquetError> for TerminalError {
         Self::Parquet(value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::{Float32Array, RecordBatch};
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::ParquetTerminal;
+
+    #[tokio::test]
+    async fn eof_flushes_parquet_and_rotation_creates_sequential_parts() {
+        let directory = std::env::temp_dir().join(format!(
+            "kineplex-terminal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "score",
+            DataType::Float32,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from(vec![1.0]))],
+        )
+        .expect("batch is valid");
+        let terminal = ParquetTerminal::create(&directory, schema, 1)
+            .await
+            .expect("terminal creates directory");
+        let (batch_tx, batch_rx) = tokio::sync::mpsc::channel(2);
+        let (eof_tx, eof_rx) = tokio::sync::watch::channel(false);
+        batch_tx.send(batch).await.expect("terminal is listening");
+        eof_tx.send(true).expect("EOF reaches terminal");
+        drop(batch_tx);
+        let summary = terminal
+            .consume(batch_rx, eof_rx)
+            .await
+            .expect("terminal closes cleanly");
+        assert_eq!(summary.batches_written, 1);
+        assert_eq!(summary.rows_written, 1);
+        assert_eq!(summary.files.len(), 1);
+        assert!(summary.files[0].ends_with("part-0000.parquet"));
+        assert!(tokio::fs::metadata(&summary.files[0]).await.is_ok());
+        tokio::fs::remove_dir_all(directory)
+            .await
+            .expect("output fixture removed");
+    }
+}
