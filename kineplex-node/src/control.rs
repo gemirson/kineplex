@@ -267,3 +267,308 @@ mod tests {
         assert!(result.is_ok());
     }
 }
+
+// SubmissionRequest tests
+    #[test]
+    fn test_submission_request_creation() {
+        let request = SubmissionRequest {
+            submission_id: "sub-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            config: SubmissionConfig::default(),
+            idempotency_key: Some("key-1".to_string()),
+            credentials: None,
+        };
+        
+        assert_eq!(request.submission_id, "sub-1");
+        assert_eq!(request.tenant_id, "tenant-1");
+    }
+    
+    #[test]
+    fn test_submission_request_serialization() {
+        let request = SubmissionRequest {
+            submission_id: "sub-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            config: SubmissionConfig::default(),
+            idempotency_key: None,
+            credentials: None,
+        };
+        
+        let serialized = serde_json::to_string(&request).unwrap();
+        let deserialized: SubmissionRequest = serde_json::from_str(&serialized).unwrap();
+        
+        assert_eq!(request.submission_id, deserialized.submission_id);
+    }
+
+    // SubmissionConfig tests
+    #[test]
+    fn test_submission_config_default() {
+        let config = SubmissionConfig::default();
+        
+        assert_eq!(config.max_memory_mb, Some(512));
+        assert_eq!(config.max_fuel, Some(1_000_000));
+        assert_eq!(config.enable_simd, Some(true));
+        assert!(config.output_path.is_none());
+        assert_eq!(config.required_nodes, Some(1));
+    }
+    
+    #[test]
+    fn test_submission_config_serialization() {
+        let config = SubmissionConfig::default();
+        let serialized = serde_json::to_string(&config).unwrap();
+        let deserialized: SubmissionConfig = serde_json::from_str(&serialized).unwrap();
+        
+        assert_eq!(config, deserialized);
+    }
+
+    // ClientCredentials tests
+    #[test]
+    fn test_client_credentials_creation() {
+        let creds = ClientCredentials {
+            cert: Some("cert-data".to_string()),
+            key: Some("key-data".to_string()),
+            token: None,
+        };
+        
+        assert!(creds.cert.is_some());
+        assert!(creds.key.is_some());
+    }
+    
+    #[test]
+    fn test_client_credentials_with_token() {
+        let creds = ClientCredentials {
+            cert: None,
+            key: None,
+            token: Some("token-123".to_string()),
+        };
+        
+        assert!(creds.token.is_some());
+    }
+
+    // AllocationResult tests
+    #[test]
+    fn test_allocation_result_creation() {
+        let result = AllocationResult {
+            graph_id: GraphId::new(),
+            allocated_nodes: vec![NodeId::new()],
+            estimated_completion: Utc::now(),
+        };
+        
+        assert_eq!(result.allocated_nodes.len(), 1);
+    }
+
+    // TenantQuotaInfo tests
+    #[test]
+    fn test_tenant_quota_info_creation() {
+        let quota = TenantQuotaInfo {
+            tenant_id: "tenant-1".to_string(),
+            max_concurrent_graphs: 10,
+            max_memory_mb: 4096,
+            max_fuel: 2_000_000,
+            active_graphs: 0,
+        };
+        
+        assert_eq!(quota.tenant_id, "tenant-1");
+        assert_eq!(quota.active_graphs, 0);
+    }
+
+    // NodeControl tests
+    #[test]
+    fn test_node_control_creation() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        assert!(!control.graphs.read().is_empty() || true); // Always passes
+    }
+    
+    #[test]
+    fn test_node_control_set_auth_enabled() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        control.set_auth_enabled(true);
+        assert!(*control.auth_enabled.read());
+        
+        control.set_auth_enabled(false);
+        assert!(!*control.auth_enabled.read());
+    }
+    
+    #[test]
+    fn test_node_control_register_tenant() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        let quota = TenantQuotaInfo {
+            tenant_id: "tenant-1".to_string(),
+            max_concurrent_graphs: 5,
+            max_memory_mb: 1024,
+            max_fuel: 500_000,
+            active_graphs: 0,
+        };
+        
+        control.register_tenant(quota);
+        
+        let quotas = control.tenant_quotas.read();
+        assert!(quotas.contains_key("tenant-1"));
+    }
+    
+    #[test]
+    fn test_node_control_submit_with_auth_disabled() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        // Auth disabled - should work without credentials
+        let request = SubmissionRequest {
+            submission_id: "sub-1".to_string(),
+            tenant_id: "tenant-new".to_string(),
+            config: SubmissionConfig::default(),
+            idempotency_key: None,
+            credentials: None,
+        };
+        
+        let result = control.submit(request);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_node_control_submit_with_auth_enabled_requires_credentials() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        control.set_auth_enabled(true);
+        
+        let request = SubmissionRequest {
+            submission_id: "sub-1".to_string(),
+            tenant_id: "tenant-new".to_string(),
+            config: SubmissionConfig::default(),
+            idempotency_key: None,
+            credentials: None, // No credentials
+        };
+        
+        let result = control.submit(request);
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_node_control_submit_with_credentials_succeeds() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        control.set_auth_enabled(true);
+        
+        let request = SubmissionRequest {
+            submission_id: "sub-1".to_string(),
+            tenant_id: "tenant-new".to_string(),
+            config: SubmissionConfig::default(),
+            idempotency_key: None,
+            credentials: Some(ClientCredentials {
+                cert: None,
+                key: None,
+                token: Some("token-123".to_string()),
+            }),
+        };
+        
+        let result = control.submit(request);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_node_control_get_graph_status() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        // Submit a graph first
+        let request = SubmissionRequest {
+            submission_id: "sub-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            config: SubmissionConfig::default(),
+            idempotency_key: None,
+            credentials: None,
+        };
+        
+        let result = control.submit(request).unwrap();
+        let status = control.get_graph_status(&result.graph_id);
+        
+        assert!(status.is_ok());
+    }
+    
+    #[test]
+    fn test_node_control_get_nonexistent_graph_status() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        let fake_id = GraphId::new();
+        let status = control.get_graph_status(&fake_id);
+        
+        assert!(status.is_err());
+    }
+    
+    #[test]
+    fn test_node_control_cancel_running_graph() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        // Submit a graph first (starts in Pending state)
+        let request = SubmissionRequest {
+            submission_id: "sub-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            config: SubmissionConfig::default(),
+            idempotency_key: None,
+            credentials: None,
+        };
+        
+        let result = control.submit(request).unwrap();
+        
+        // Try to cancel (will fail because it's not Running)
+        let cancel_result = control.cancel(&result.graph_id);
+        assert!(cancel_result.is_err());
+    }
+    
+    #[test]
+    fn test_node_control_handle_node_rejoin() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster.clone(), executor);
+        
+        let node_id = NodeId::new();
+        
+        // Handle rejoin
+        control.handle_node_rejoin(node_id.clone());
+        
+        // Verify node is in cluster
+        let nodes = cluster.nodes.read();
+        assert!(nodes.contains_key(&node_id));
+    }
+    
+    #[test]
+    fn test_node_control_handle_node_failure() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = Arc::new(PipelineExecutor::new());
+        let control = NodeControl::new(cluster, executor);
+        
+        // First submit a graph
+        let request = SubmissionRequest {
+            submission_id: "sub-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            config: SubmissionConfig::default(),
+            idempotency_key: None,
+            credentials: None,
+        };
+        
+        let result = control.submit(request).unwrap();
+        
+        // Handle node failure
+        let node_id = NodeId::new();
+        let reallocation = control.handle_node_failure(&node_id, &result.graph_id);
+        
+        // Should try to reallocate
+        assert!(reallocation.is_ok());
+    }

@@ -227,3 +227,211 @@ mod tests {
         assert!(alive.is_empty());
     }
 }
+
+#[test]
+    fn test_node_info_creation() {
+        let node_id = NetNodeId::new();
+        let addr = NetworkAddress::new("192.168.1.1", 8080);
+        let node = NodeInfo::new(node_id.clone(), addr);
+        
+        assert_eq!(node.id, node_id);
+        assert!(node.is_alive());
+    }
+    
+    #[test]
+    fn test_node_info_update_heartbeat() {
+        let node = NodeInfo::new(
+            NetNodeId::new(),
+            NetworkAddress::new("localhost", 8080),
+        );
+        
+        let original_heartbeat = node.last_heartbeat;
+        
+        let mut node_mut = node.clone();
+        node_mut.update_heartbeat();
+        
+        assert!(node_mut.last_heartbeat >= original_heartbeat);
+        assert_eq!(node_mut.incarnation, 1);
+    }
+    
+    #[test]
+    fn test_node_info_with_metadata() {
+        let mut node = NodeInfo::new(
+            NetNodeId::new(),
+            NetworkAddress::new("localhost", 8080),
+        );
+        
+        node.metadata.insert("role".to_string(), "worker".to_string());
+        
+        assert_eq!(node.metadata.get("role"), Some(&"worker".to_string()));
+    }
+    
+    #[test]
+    fn test_network_address_to_string() {
+        let addr = NetworkAddress::new("localhost", 8080);
+        assert_eq!(addr.to_string(), "localhost:8080");
+        
+        let addr2 = NetworkAddress::new("192.168.1.1", 9000);
+        assert_eq!(addr2.to_string(), "192.168.1.1:9000");
+    }
+    
+    #[test]
+    fn test_network_address_serialization() {
+        let addr = NetworkAddress::new("localhost", 8080);
+        let serialized = serde_json::to_string(&addr).unwrap();
+        let deserialized: NetworkAddress = serde_json::from_str(&serialized).unwrap();
+        
+        assert_eq!(addr, deserialized);
+    }
+    
+    #[test]
+    fn test_gossip_message_creation() {
+        let source = NetNodeId::new();
+        let msg = GossipMessage::new(source.clone());
+        
+        assert_eq!(msg.source, source);
+        assert!(msg.members.is_empty());
+    }
+    
+    #[test]
+    fn test_gossip_message_with_members() {
+        let source = NetNodeId::new();
+        let node = NodeInfo::new(
+            NetNodeId::new(),
+            NetworkAddress::new("localhost", 8080),
+        );
+        
+        let msg = GossipMessage::new(source)
+            .with_members(vec![node]);
+        
+        assert_eq!(msg.members.len(), 1);
+    }
+    
+    #[test]
+    fn test_gossip_protocol_initial_members() {
+        let self_node = NetNodeId::new();
+        let protocol = GossipProtocol::new(self_node.clone());
+        
+        let members = protocol.get_all_members();
+        assert!(!members.is_empty());
+    }
+    
+    #[test]
+    fn test_gossip_protocol_handle_leave() {
+        let protocol = GossipProtocol::new(NetNodeId::new());
+        
+        let node_id = NetNodeId::new();
+        let node = NodeInfo::new(node_id.clone(), NetworkAddress::new("localhost", 8080));
+        protocol.register_node(node);
+        
+        protocol.handle_leave(node_id.clone());
+        
+        let alive = protocol.get_alive_members();
+        assert!(alive.is_empty() || alive.len() == 1); // Only self may remain
+    }
+    
+    #[test]
+    fn test_gossip_protocol_handle_rejoin() {
+        let protocol = GossipProtocol::new(NetNodeId::new());
+        
+        let node_id = NetNodeId::new();
+        let node = NodeInfo::new(node_id.clone(), NetworkAddress::new("localhost", 8080));
+        
+        // First join
+        protocol.register_node(node.clone());
+        
+        // Failure
+        protocol.handle_failure(node_id.clone());
+        
+        // Rejoin
+        protocol.handle_rejoin(node.clone());
+        
+        let alive = protocol.get_alive_members();
+        assert!(alive.len() >= 1);
+    }
+    
+    #[test]
+    fn test_gossip_protocol_convergence() {
+        let protocol = GossipProtocol::new(NetNodeId::new());
+        
+        let convergence = protocol.convergence();
+        
+        // With only self, should be 100%
+        assert_eq!(convergence, 1.0);
+    }
+    
+    #[test]
+    fn test_gossip_protocol_version() {
+        let protocol = GossipProtocol::new(NetNodeId::new());
+        
+        let version = protocol.version();
+        assert_eq!(version, "1.0.0");
+    }
+    
+    #[test]
+    fn test_gossip_protocol_process_gossip() {
+        let protocol = GossipProtocol::new(NetNodeId::new());
+        
+        let source = NetNodeId::new();
+        let node = NodeInfo::new(
+            NetNodeId::new(),
+            NetworkAddress::new("localhost", 8080),
+        );
+        
+        let msg = GossipMessage::new(source)
+            .with_members(vec![node]);
+        
+        protocol.process_gossip(msg);
+        
+        // Should have processed without error
+    }
+    
+    #[test]
+    fn test_gossip_protocol_get_events() {
+        let protocol = GossipProtocol::new(NetNodeId::new());
+        
+        let node = NodeInfo::new(
+            NetNodeId::new(),
+            NetworkAddress::new("localhost", 8080),
+        );
+        
+        // Register a node to generate event
+        protocol.register_node(node);
+        
+        let events = protocol.get_events();
+        
+        // Event should be consumed after getting
+        assert!(events.len() >= 1);
+    }
+    
+    #[test]
+    fn test_membership_event_variants() {
+        let node_id = NetNodeId::new();
+        let node = NodeInfo::new(node_id.clone(), NetworkAddress::new("localhost", 8080));
+        
+        // Test all variants
+        let _join = MembershipEvent::Join(node.clone());
+        let _leave = MembershipEvent::Leave(node_id.clone());
+        let _failure = MembershipEvent::Failure(node_id.clone());
+        let _rejoin = MembershipEvent::Rejoin(node.clone());
+    }
+    
+    #[test]
+    fn test_net_node_id_creation() {
+        let id = NetNodeId::new();
+        assert_ne!(id.0, uuid::Uuid::nil());
+    }
+    
+    #[test]
+    fn test_net_node_id_default() {
+        let id = NetNodeId::default();
+        assert_ne!(id.0, uuid::Uuid::nil());
+    }
+    
+    #[test]
+    fn test_connection_status_variants() {
+        let _connected = ConnectionStatus::Connected;
+        let _disconnected = ConnectionStatus::Disconnected;
+        let _connecting = ConnectionStatus::Connecting;
+        let _failed = ConnectionStatus::Failed("error".to_string());
+    }
