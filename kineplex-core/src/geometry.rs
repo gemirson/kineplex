@@ -676,6 +676,45 @@ impl HomotopyPath {
     }
 }
 
+/// Key for a reusable local topology deformation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct DeformationKey {
+    pub from_chart: ChartId,
+    pub to_chart: ChartId,
+    pub neighborhood_class: u32,
+}
+
+/// O(1) cache of precomputed homotopy templates for recurring neighborhood changes.
+#[derive(Default)]
+pub struct DeformationCache {
+    templates: DashMap<DeformationKey, Arc<HomotopyPath>>,
+}
+
+impl DeformationCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&self, key: DeformationKey, template: HomotopyPath) -> Arc<HomotopyPath> {
+        let template = Arc::new(template);
+        self.templates.insert(key, Arc::clone(&template));
+        template
+    }
+
+    #[must_use]
+    pub fn get(&self, key: &DeformationKey) -> Option<Arc<HomotopyPath>> {
+        self.templates
+            .get(key)
+            .map(|entry| Arc::clone(entry.value()))
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.templates.len()
+    }
+}
+
 fn derivative(symbols: &ChristoffelSymbols, state: GeodesicState) -> GeodesicState {
     let mut acceleration = [0.0; 3];
     for (upper, component) in acceleration.iter_mut().enumerate() {
@@ -706,10 +745,12 @@ fn add_scaled(state: GeodesicState, derivative: GeodesicState, scale: f64) -> Ge
 mod tests {
     use super::{
         metric_norm_squared, metric_norm_squared_scalar, AdaptiveRoutePlanner, AtomicGeodesicTable,
-        ChristoffelSymbols, CongestionMetricAdapter, CurvatureMonitor, GeodesicIntegrator,
-        GeodesicState, HomotopyPath, LocalAtlas, LocalChart, MetricSample, MetricTensor,
-        MetricWorker, NodeLoadSample, QuicTransportFeedback, RouteEntry, RouteSnapshot,
+        ChristoffelSymbols, CongestionMetricAdapter, CurvatureMonitor, DeformationCache,
+        DeformationKey, GeodesicIntegrator, GeodesicState, HomotopyPath, LocalAtlas, LocalChart,
+        MetricSample, MetricTensor, MetricWorker, NodeLoadSample, QuicTransportFeedback,
+        RouteEntry, RouteSnapshot,
     };
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[test]
@@ -928,5 +969,21 @@ mod tests {
         assert_eq!(current[0], [0.0, 0.5, 0.0]);
         path.sample_into(1.0, &mut current).expect("alternate path");
         assert_eq!(current[0], [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn deformation_templates_are_reused_by_constant_time_key() {
+        let cache = DeformationCache::new();
+        let key = DeformationKey {
+            from_chart: 1,
+            to_chart: 2,
+            neighborhood_class: 4,
+        };
+        let template =
+            HomotopyPath::new(vec![[0.0; 3]], vec![[1.0, 0.0, 0.0]]).expect("one waypoint pair");
+        let inserted = cache.insert(key, template);
+        let cached = cache.get(&key).expect("template is cached");
+        assert!(Arc::ptr_eq(&inserted, &cached));
+        assert_eq!(cache.len(), 1);
     }
 }
