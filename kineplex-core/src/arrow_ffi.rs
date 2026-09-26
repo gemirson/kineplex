@@ -24,7 +24,11 @@ mod tests {
 
     #[test]
     fn ffi_export_keeps_each_array_and_named_schema_alive() {
-        let schema = Arc::new(Schema::new(vec![Field::new("score", DataType::Float32, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "score",
+            DataType::Float32,
+            false,
+        )]));
         let batch = arrow::array::RecordBatch::try_new(
             schema,
             vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],

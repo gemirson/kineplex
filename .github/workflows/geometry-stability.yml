@@ -1,0 +1,17 @@
+name: Geometry stability
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check geometric stress test
+        run: cargo test -p kineplex-core --test geometry_deformation_stress
+      - name: Run geodesic mutation benchmark
+        run: cargo bench -p kineplex-core --bench geometry_stability -- --noplot

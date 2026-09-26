@@ -5,19 +5,26 @@ pub mod accumulator;
 pub mod arrow_concat;
 pub mod buffer_recycle;
 pub mod egress;
-pub mod physical_plan;
-pub mod spike_tap;
+pub mod flatbuffers;
+pub mod graph;
+pub mod geometry;
+pub mod metrics;
+pub mod metric_formula;
+pub mod iouaring;
+pub mod iouring_net;
+pub mod observability;
+pub mod packet;
+pub mod plane_isolation;
 pub mod receptor;
 pub mod reliability;
 pub mod terminal;
 pub mod topology;
-pub mod graph;
-pub mod geometry;
-pub mod plane_isolation;
-pub mod metrics;
-pub mod metric_formula;
-pub mod observability;
+pub mod physical_plan;
+pub mod spike_tap;
+pub mod quic;
+pub mod synapse;
 pub mod wasm;
+pub use quic::stream;
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -30,20 +37,15 @@ pub const DEFAULT_NODE_PORT: u16 = 8000;
 /// Immutable runtime configuration shared by all node components.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeConfig {
-    /// Interface address on which the node accepts traffic.
     pub bind_ip: IpAddr,
-    /// UDP port on which the node accepts traffic.
     pub port: u16,
-    /// Reachable interface address advertised to peers, if explicitly configured.
     pub advertise_ip: Option<IpAddr>,
-    /// Peer addresses contacted while bootstrapping cluster membership.
     pub seeds: Vec<SocketAddr>,
-    /// Whether to enable native CPU sampling in this process.
+    /// Whether to enable the native CPU sampling endpoint.
     pub enable_profiling: bool,
 }
 
 impl NodeConfig {
-    /// Creates a validated, natively typed node configuration.
     #[must_use]
     pub const fn new(bind_ip: IpAddr, port: u16, seeds: Vec<SocketAddr>) -> Self {
         Self {
@@ -55,24 +57,19 @@ impl NodeConfig {
         }
     }
 
-    /// Sets the reachable interface address announced to remote peers.
     #[must_use]
     pub const fn with_advertise_ip(mut self, advertise_ip: Option<IpAddr>) -> Self {
         self.advertise_ip = advertise_ip;
         self
     }
 
-    /// Enables or disables native CPU profiling.
+    /// Enables or disables native CPU profiling for this node process.
     #[must_use]
     pub const fn with_profiling(mut self, enable_profiling: bool) -> Self {
         self.enable_profiling = enable_profiling;
         self
     }
 
-    /// Returns the reachable node endpoint, when one can be determined safely.
-    ///
-    /// An explicit advertise IP takes precedence. A concrete bind IP is otherwise
-    /// usable, while an unspecified bind such as `0.0.0.0` requires explicit input.
     #[must_use]
     pub fn advertise_addr(&self) -> Option<SocketAddr> {
         self.advertise_ip
@@ -80,7 +77,6 @@ impl NodeConfig {
             .map(|ip| SocketAddr::new(ip, self.port))
     }
 
-    /// Returns the complete socket address on which the node should bind.
     #[must_use]
     pub const fn bind_addr(&self) -> SocketAddr {
         SocketAddr::new(self.bind_ip, self.port)
@@ -89,12 +85,9 @@ impl NodeConfig {
 
 static NODE_CONFIG: OnceLock<NodeConfig> = OnceLock::new();
 
-/// Failure returned when the process-wide node configuration cannot be initialized.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NodeConfigInitError {
-    /// Another component already initialized the process-wide configuration.
     AlreadyInitialized,
-    /// The initialized value could not be read back from the global cell.
     UnavailableAfterInitialization,
 }
 
@@ -113,12 +106,6 @@ impl Display for NodeConfigInitError {
 
 impl Error for NodeConfigInitError {}
 
-/// Installs the process-wide configuration exactly once and returns its immutable reference.
-///
-/// # Errors
-///
-/// Returns [`NodeConfigInitError::AlreadyInitialized`] when this function has already
-/// succeeded in the current process. The configuration cannot be replaced after boot.
 pub fn initialize_node_config(
     config: NodeConfig,
 ) -> Result<&'static NodeConfig, NodeConfigInitError> {
@@ -130,17 +117,10 @@ pub fn initialize_node_config(
     let config = NODE_CONFIG
         .get()
         .ok_or(NodeConfigInitError::UnavailableAfterInitialization)?;
-
-    tracing::debug!(
-        bind_addr = %config.bind_addr(),
-        seed_count = config.seeds.len(),
-        "node configuration initialized"
-    );
-
+    tracing::debug!(bind_addr = %config.bind_addr(), seed_count = config.seeds.len(), "node configuration initialized");
     Ok(config)
 }
 
-/// Returns the immutable process-wide configuration when boot initialization has completed.
 #[must_use]
 pub fn node_config() -> Option<&'static NodeConfig> {
     NODE_CONFIG.get()
@@ -148,14 +128,12 @@ pub fn node_config() -> Option<&'static NodeConfig> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
     use super::NodeConfig;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[test]
     fn concrete_bind_address_is_advertised_by_default() {
         let config = NodeConfig::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000, Vec::new());
-
         assert_eq!(
             config.advertise_addr(),
             Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 8000)))
@@ -166,7 +144,6 @@ mod tests {
     fn unspecified_bind_requires_explicit_advertise_address() {
         let config = NodeConfig::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8000, Vec::new());
         assert_eq!(config.advertise_addr(), None);
-
         let advertised = config.with_advertise_ip(Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert_eq!(
             advertised.advertise_addr(),

@@ -181,7 +181,41 @@ impl MetricsRegistry {
         ));
         out
     }
-}
+
+    /// Returns metrics as an OTLP/HTTP JSON payload (no external dependencies).
+    #[must_use]
+    pub fn otlp_json(&self) -> String {
+        let spikes = self.spikes_total.load(Ordering::Relaxed) as f64;
+        let arrow_bytes = self.arrow_bytes_total.load(Ordering::Relaxed) as f64;
+        let cqe_drops = self.cqe_drops.load(Ordering::Relaxed) as f64;
+        let topology_nodes = self.topology_nodes.load(Ordering::Relaxed) as f64;
+        let topology_edges = self.topology_edges.load(Ordering::Relaxed) as f64;
+        let curvature_tensors = self.curvature_tensors.load(Ordering::Relaxed) as f64;
+        let riemann_curvature =
+            f64::from_bits(self.riemann_curvature_bits.load(Ordering::Relaxed));
+        let geodesic_revision = self.geodesic_revision.load(Ordering::Relaxed) as f64;
+        let geodesic_lookups = self.geodesic_lookups.load(Ordering::Relaxed) as f64;
+        let atlas_invalidations = self.atlas_invalidations.load(Ordering::Relaxed) as f64;
+
+        // Wasm histogram
+        let wasm_count = self.wasm_count.load(Ordering::Relaxed) as f64;
+        let wasm_sum_ms = self.wasm_sum_micros.load(Ordering::Relaxed) as f64 / 1000.0;
+        let mut wasm_bucket_points = String::new();
+        for (index, boundary) in WASM_BUCKETS_MS.iter().enumerate() {
+            let count = self.wasm_buckets[index].load(Ordering::Relaxed) as f64;
+            wasm_bucket_points.push_str(&format!(
+                r#"{{"attributes":[{{"key":"le","value":{{"stringValue":"{boundary}"}}}}],"asDouble":{count},"startTimeUnixNano":"0","timeUnixNano":"0"}},"#
+            ));
+        }
+        // +Inf bucket
+        wasm_bucket_points.push_str(&format!(
+            r#"{{"attributes":[{{"key":"le","value":{{"stringValue":"+Inf"}}}}],"asDouble":{wasm_count},"startTimeUnixNano":"0","timeUnixNano":"0"}}"#
+        ));
+
+        format!(
+            r#"{{"resourceMetrics":[{{"resource":{{"attributes":[]}},"scopeMetrics":[{{"scope":{{"name":"kineplex"}},"metrics":[{{"name":"kineplex_spikes_total","description":"Total emitted KinePlex spikes.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{spikes},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}},{{"name":"kineplex_arrow_bytes_total","description":"Arrow payload bytes emitted.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{arrow_bytes},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}},{{"name":"kineplex_wasm_execution_ms","description":"Wasm execution duration in milliseconds.","unit":"ms","histogram":{{"dataPoints":[{{"bucketCounts":[{wasm_bucket_points}],"sum":{wasm_sum_ms},"count":{wasm_count},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2}}}},{{"name":"kineplex_cqe_drops","description":"Dropped io_uring completion events.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{cqe_drops},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}},{{"name":"kineplex_topology_nodes","description":"Current known topology node count.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{topology_nodes},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_topology_edges","description":"Current known topology edge count.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{topology_edges},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_curvature_tensors","description":"Current curvature tensor count.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{curvature_tensors},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_riemann_curvature","description":"Current local Riemann curvature norm.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{riemann_curvature},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_geodesic_route_revision","description":"Active route snapshot revision.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{geodesic_revision},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_geodesic_route_lookups_total","description":"Geodesic route lookup count.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{geodesic_lookups},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}},{{"name":"kineplex_atlas_invalidations_total","description":"Local charts invalidated by curvature.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{atlas_invalidations},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}}]}}]}}]}}"#
+        )
+    }
 
 static REGISTRY: OnceLock<MetricsRegistry> = OnceLock::new();
 
@@ -195,6 +229,23 @@ pub fn global() -> &'static MetricsRegistry {
 mod tests {
     use super::MetricsRegistry;
     use std::time::Duration;
+
+    #[test]
+    fn otlp_json_contains_required_fields() {
+        let metrics = MetricsRegistry::new();
+        metrics.record_spike(64);
+        metrics.observe_riemann_curvature(0.5);
+        let json = metrics.otlp_json();
+        assert!(json.contains("resourceMetrics"), "missing resourceMetrics");
+        assert!(
+            json.contains("kineplex_spikes_total"),
+            "missing kineplex_spikes_total"
+        );
+        assert!(
+            json.contains("kineplex_riemann_curvature"),
+            "missing kineplex_riemann_curvature"
+        );
+    }
 
     #[test]
     fn exposes_required_counters_histogram_and_topology_gauges() {

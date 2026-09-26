@@ -74,15 +74,48 @@ pub fn metric_norm_squared_scalar(metric: &MetricTensor, vector: [f64; 3]) -> f6
         + vector[2] * vector[2] * metric.components[2][2]
 }
 
-/// Uses AVX2 when available and otherwise falls back to the scalar reference.
+/// Uses AVX-512F when available, then AVX2, then falls back to the scalar reference.
 #[must_use]
 pub fn metric_norm_squared(metric: &MetricTensor, vector: [f64; 3]) -> f64 {
     #[cfg(target_arch = "x86_64")]
-    if std::is_x86_feature_detected!("avx2") {
-        // SAFETY: runtime feature detection guarantees AVX2 support on this CPU.
-        return unsafe { metric_norm_squared_avx2(metric, vector) };
+    {
+        if std::is_x86_feature_detected!("avx512f") {
+            // SAFETY: runtime feature detection guarantees AVX-512F support on this CPU.
+            return unsafe { metric_norm_squared_avx512(metric, vector) };
+        }
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: runtime feature detection guarantees AVX2 support on this CPU.
+            return unsafe { metric_norm_squared_avx2(metric, vector) };
+        }
     }
     metric_norm_squared_scalar(metric, vector)
+}
+
+/// Computes the metric squared norm using AVX-512F (eight `f64` lanes).
+///
+/// We load the three vector components plus a padding zero into the low lanes
+/// of a 512-bit register, multiply element-wise twice (v²·g), store, and
+/// horizontally sum the three meaningful lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn metric_norm_squared_avx512(metric: &MetricTensor, vector: [f64; 3]) -> f64 {
+    use std::arch::x86_64::{_mm512_mul_pd, _mm512_set_pd, _mm512_storeu_pd};
+    // _mm512_set_pd fills lanes from highest to lowest index (lane 7 … 0).
+    let values = _mm512_set_pd(
+        0.0, 0.0, 0.0, 0.0, 0.0,
+        vector[2], vector[1], vector[0],
+    );
+    let weights = _mm512_set_pd(
+        0.0, 0.0, 0.0, 0.0, 0.0,
+        metric.components[2][2],
+        metric.components[1][1],
+        metric.components[0][0],
+    );
+    // weighted_squares[i] = vector[i]² × metric.diagonal[i]
+    let weighted_squares = _mm512_mul_pd(_mm512_mul_pd(values, values), weights);
+    let mut lanes = [0.0_f64; 8];
+    _mm512_storeu_pd(lanes.as_mut_ptr(), weighted_squares);
+    lanes[0] + lanes[1] + lanes[2]
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -123,6 +156,8 @@ pub struct MetricWorker {
     tensor: Arc<RwLock<MetricTensor>>,
     shutdown: Option<mpsc::Sender<()>>,
     join: Option<JoinHandle<()>>,
+    /// Adapter that couples QUIC backpressure directly into the metric tensor components.
+    pub congestion_adapter: CongestionMetricAdapter,
 }
 
 impl MetricWorker {
@@ -153,6 +188,7 @@ impl MetricWorker {
                     tensor,
                     shutdown: Some(shutdown_sender),
                     join: Some(join),
+                    congestion_adapter: CongestionMetricAdapter,
                 },
                 MetricPublisher {
                     sender: sample_sender,
@@ -173,6 +209,18 @@ impl MetricWorker {
             .tensor
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Applies QUIC transport feedback directly to the live metric tensor's diagonal components.
+    ///
+    /// Acquires a write lock, delegates to `CongestionMetricAdapter::apply_to_tensor`, and
+    /// stores the updated tensor back under the same lock.
+    pub fn apply_congestion_feedback(&self, feedback: QuicTransportFeedback) {
+        let mut tensor = self
+            .tensor
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.congestion_adapter.apply_to_tensor(&mut tensor, feedback);
     }
 
     /// Stops and joins the background worker.
@@ -421,6 +469,39 @@ impl CongestionMetricAdapter {
         let sample_cost = feedback.smoothed_rtt_ms.max(0.0) * 0.01 + loss_ratio * 10.0 + congestion;
         route.resistance = (route.resistance * 0.75 + sample_cost * 0.25).max(0.0);
         routes.update_route(edge, route)
+    }
+
+    /// Feeds QUIC backpressure directly into the g_ij components of a MetricTensor.
+    ///
+    /// Each diagonal component is updated with an EWMA (alpha = 0.25) contribution
+    /// from the corresponding transport dimension, then clamped to [1.0, 101.0].
+    pub fn apply_to_tensor(
+        &self,
+        tensor: &mut MetricTensor,
+        feedback: QuicTransportFeedback,
+    ) {
+        let loss_ratio = if feedback.packets_sent == 0 {
+            0.0
+        } else {
+            (feedback.packets_lost as f64 / feedback.packets_sent as f64).clamp(0.0, 1.0)
+        };
+        let congestion = if feedback.congestion_window_bytes >= 64 * 1024 {
+            0.0
+        } else {
+            1.0 - feedback.congestion_window_bytes as f64 / (64 * 1024) as f64
+        };
+        let rtt_cost = (feedback.smoothed_rtt_ms / 100.0).clamp(0.0, 10.0);
+
+        // g_00: latency dimension — EWMA contribution from RTT cost
+        tensor.components[0][0] = (tensor.components[0][0] + rtt_cost * 0.25).clamp(1.0, 101.0);
+        // g_11: queue/bytes dimension — EWMA contribution from congestion window pressure
+        tensor.components[1][1] =
+            (tensor.components[1][1] + congestion * 2.0 * 0.25).clamp(1.0, 101.0);
+        // g_22: CPU/loss dimension — EWMA contribution from packet loss ratio
+        tensor.components[2][2] =
+            (tensor.components[2][2] + loss_ratio * 5.0 * 0.25).clamp(1.0, 101.0);
+
+        tensor.revision = tensor.revision.wrapping_add(1);
     }
 }
 
@@ -858,6 +939,32 @@ mod tests {
     }
 
     #[test]
+    fn avx512_norm_matches_scalar_when_available() {
+        // Only assert on CPUs that actually expose AVX-512F.  On other machines
+        // the test still compiles and runs — it just skips the assertion.
+        let metric = MetricTensor::from_sample(
+            MetricSample {
+                latency_ms: 12.0,
+                queued_bytes: 4096.0,
+                cpu_percent: 43.0,
+            },
+            1,
+        );
+        for point in [[1.0_f64, 2.0, 3.0], [-3.5, 0.25, 8.0], [0.0; 3]] {
+            let scalar = metric_norm_squared_scalar(&metric, point);
+            if std::is_x86_feature_detected!("avx512f") {
+                // SAFETY: guarded by runtime feature detection.
+                let avx512 =
+                    unsafe { super::metric_norm_squared_avx512(&metric, point) };
+                assert!(
+                    (scalar - avx512).abs() < 1e-10,
+                    "AVX-512 result {avx512} differs from scalar {scalar} for point {point:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn high_curvature_invalidates_a_local_chart_immediately() {
         let atlas = LocalAtlas::new();
         atlas.insert(LocalChart {
@@ -990,5 +1097,42 @@ mod tests {
         let cached = cache.get(&key).expect("template is cached");
         assert!(Arc::ptr_eq(&inserted, &cached));
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn congestion_feedback_raises_tensor_diagonal_components() {
+        let mut tensor = MetricTensor::default();
+        let adapter = CongestionMetricAdapter;
+
+        // High-latency, high-loss, narrow congestion window feedback
+        let feedback = QuicTransportFeedback {
+            smoothed_rtt_ms: 400.0,   // rtt_cost = (400/100).clamp(0,10) = 4.0
+            congestion_window_bytes: 1024, // congestion = 1 - 1024/65536 ≈ 0.984
+            packets_sent: 200,
+            packets_lost: 40,          // loss_ratio = 40/200 = 0.2
+        };
+
+        adapter.apply_to_tensor(&mut tensor, feedback);
+
+        // g_00 started at 1.0, += rtt_cost(4.0) * 0.25 = +1.0 → 2.0
+        assert!(
+            tensor.components[0][0] > 1.0,
+            "latency component should exceed 1.0, got {}",
+            tensor.components[0][0]
+        );
+        // g_11 started at 1.0, += congestion(≈0.984) * 2.0 * 0.25 ≈ +0.492 → ≈1.492
+        assert!(
+            tensor.components[1][1] > 1.0,
+            "queue/bytes component should exceed 1.0, got {}",
+            tensor.components[1][1]
+        );
+        // g_22 started at 1.0, += loss_ratio(0.2) * 5.0 * 0.25 = +0.25 → 1.25
+        assert!(
+            tensor.components[2][2] > 1.0,
+            "loss component should exceed 1.0, got {}",
+            tensor.components[2][2]
+        );
+        // revision must be incremented by exactly 1
+        assert_eq!(tensor.revision, 1, "revision should be incremented to 1");
     }
 }

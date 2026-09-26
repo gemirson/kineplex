@@ -23,6 +23,9 @@ tokio.workspace = true
 futures-util.workspace = true
 libc.workspace = true
 parquet.workspace = true
+quiche.workspace = true
+rcgen.workspace = true
+ring.workspace = true
 dashmap.workspace = true
 wasmtime.workspace = true
 
@@ -37,6 +40,10 @@ harness = false
 
 [[bench]]
 name = "geodesic_lookup"
+harness = false
+
+[[bench]]
+name = "geometry_stability"
 harness = false
 
 [lints]

@@ -216,6 +216,7 @@ fn router(state: Arc<ControlState>) -> Router {
         .route("/tap", get(subscribe_tapping))
         .route("/graph_status/:graph_id", get(graph_status))
         .route("/metrics", get(prometheus_metrics))
+        .route("/metrics/otlp", get(otlp_metrics))
         .route("/debug/pprof/flamegraph", get(flamegraph))
         .route("/allocate_step", post(allocate_step))
         .route("/cancel_allocation", post(cancel_allocation))
@@ -231,6 +232,17 @@ async fn prometheus_metrics() -> Response {
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+    );
+    response
+}
+
+async fn otlp_metrics() -> Response {
+    let mut response = Response::new(Body::from(
+        kineplex_core::metrics::global().otlp_json(),
+    ));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
     );
     response
 }
