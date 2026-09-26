@@ -21,6 +21,7 @@ tracing-subscriber.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
+wat = "=1.0.85"
 serde_json.workspace = true
 
 [lints]

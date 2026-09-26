@@ -8,10 +8,12 @@ use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use arrow::array::{Array, Float32Array, RecordBatch};
 use dashmap::DashMap;
 use ring::digest::{digest, SHA256};
 use wasmtime::{
-    Config, Engine, Instance, Module, OptLevel, Store, StoreLimits, StoreLimitsBuilder,
+    Caller, Config, Engine, Instance, Linker, Module, OptLevel, Store, StoreLimits,
+    StoreLimitsBuilder,
 };
 
 /// Maximum linear memory allowed for one WebAssembly instance (2 GiB).
@@ -150,6 +152,7 @@ impl Error for WasmModuleError {}
 /// State isolated to a single Wasmtime store.
 struct StoreState {
     limits: StoreLimits,
+    arrow_batch: Option<Arc<RecordBatch>>,
 }
 
 /// Runs exported, zero-argument WebAssembly functions in a resource-limited store.
@@ -181,17 +184,93 @@ impl WasmRuntime {
             .cache
             .get_or_compile(self.engine, wasm)
             .map_err(WasmExecutionError::Compile)?;
-        let mut store = self.new_store(fuel).map_err(WasmExecutionError::Fuel)?;
+        let mut store = self
+            .new_store(fuel, None)
+            .map_err(WasmExecutionError::Fuel)?;
         let instance =
             Instance::new(&mut store, &module, &[]).map_err(WasmExecutionError::Instantiate)?;
         Ok(WasmInstance { store, instance })
     }
 
-    fn new_store(&self, fuel: u64) -> Result<Store<StoreState>, wasmtime::Error> {
+    /// Calls a guest function with a read-only Arrow `Float32` input capability.
+    ///
+    /// The guest imports `kineplex.read_f32(column: i32, row: i32) -> f32`.
+    /// Values cross the Wasm boundary by value; the guest never receives a host
+    /// pointer and cannot mutate the source batch.
+    pub fn call_with_arrow_f32(
+        &self,
+        wasm: &[u8],
+        export: &str,
+        batch: Arc<RecordBatch>,
+        fuel: u64,
+    ) -> Result<f32, WasmExecutionError> {
+        let module = self
+            .cache
+            .get_or_compile(self.engine, wasm)
+            .map_err(WasmExecutionError::Compile)?;
+        let mut store = self
+            .new_store(fuel, Some(batch))
+            .map_err(WasmExecutionError::Fuel)?;
+        let mut linker = Linker::new(self.engine);
+        linker
+            .func_wrap(
+                "kineplex",
+                "read_f32",
+                |caller: Caller<'_, StoreState>, column: i32, row: i32| -> wasmtime::Result<f32> {
+                    if column < 0 || row < 0 {
+                        return Err(wasmtime::Error::msg(
+                            "Arrow column and row must be non-negative",
+                        ));
+                    }
+                    let batch = caller
+                        .data()
+                        .arrow_batch
+                        .as_ref()
+                        .ok_or_else(|| wasmtime::Error::msg("Arrow input is unavailable"))?;
+                    let array = batch
+                        .columns()
+                        .get(column as usize)
+                        .ok_or_else(|| wasmtime::Error::msg("Arrow column is out of bounds"))?
+                        .as_any()
+                        .downcast_ref::<Float32Array>()
+                        .ok_or_else(|| wasmtime::Error::msg("Arrow input column is not Float32"))?;
+                    let row = row as usize;
+                    if row >= array.len() {
+                        return Err(wasmtime::Error::msg("Arrow row is out of bounds"));
+                    }
+                    if array.is_null(row) {
+                        return Err(wasmtime::Error::msg("Arrow row is null"));
+                    }
+                    Ok(array.value(row))
+                },
+            )
+            .map_err(WasmExecutionError::Instantiate)?;
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .map_err(WasmExecutionError::Instantiate)?;
+        let function = instance
+            .get_typed_func::<(), f32>(&mut store, export)
+            .map_err(WasmExecutionError::Export)?;
+        function
+            .call(&mut store, ())
+            .map_err(WasmExecutionError::Trap)
+    }
+
+    fn new_store(
+        &self,
+        fuel: u64,
+        arrow_batch: Option<Arc<RecordBatch>>,
+    ) -> Result<Store<StoreState>, wasmtime::Error> {
         let limits = StoreLimitsBuilder::new()
             .memory_size(MAX_WASM_MEMORY_BYTES)
             .build();
-        let mut store = Store::new(self.engine, StoreState { limits });
+        let mut store = Store::new(
+            self.engine,
+            StoreState {
+                limits,
+                arrow_batch,
+            },
+        );
         store.limiter(|state| &mut state.limits);
         store.set_fuel(fuel)?;
         Ok(store)
@@ -285,5 +364,33 @@ mod tests {
             .err()
             .expect("invalid bytes are rejected");
         assert!(error.to_string().contains("invalid WebAssembly module"));
+    }
+
+    #[test]
+    fn wasm_can_sum_arrow_values_through_read_only_host_calls() {
+        use std::sync::Arc;
+
+        use arrow::array::{Float32Array, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "kineplex" "read_f32" (func $read_f32 (param i32 i32) (result f32)))
+                (func (export "sum") (result f32)
+                    f32.const 0
+                    i32.const 0 i32.const 0 call $read_f32 f32.add
+                    i32.const 0 i32.const 1 call $read_f32 f32.add))"#,
+        )
+        .expect("WAT parses");
+        let schema = Arc::new(Schema::new(vec![Field::new("score", DataType::Float32, false)]));
+        let batch = Arc::new(
+            RecordBatch::try_new(schema, vec![Arc::new(Float32Array::from(vec![4.0, 7.0]))])
+                .expect("batch is valid"),
+        );
+        let runtime = WasmRuntime::new().expect("Wasmtime engine initializes");
+        let sum = runtime
+            .call_with_arrow_f32(&wasm, "sum", batch, 100_000)
+            .expect("guest call succeeds");
+        assert_eq!(sum, 11.0);
     }
 }
