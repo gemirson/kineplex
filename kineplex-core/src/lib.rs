@@ -15,6 +15,7 @@ pub mod graph;
 pub mod geometry;
 pub mod plane_isolation;
 pub mod metrics;
+pub mod metric_formula;
 pub mod observability;
 pub mod wasm;
 
