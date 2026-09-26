@@ -629,6 +629,53 @@ impl GeodesicIntegrator {
     }
 }
 
+/// Continuous path deformation between two equal-length waypoint sequences.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HomotopyPath {
+    from: Vec<[f64; 3]>,
+    to: Vec<[f64; 3]>,
+}
+
+impl HomotopyPath {
+    pub fn new(from: Vec<[f64; 3]>, to: Vec<[f64; 3]>) -> Result<Self, &'static str> {
+        if from.len() != to.len() || from.is_empty() {
+            return Err("homotopy paths must have the same non-zero waypoint count");
+        }
+        if from
+            .iter()
+            .chain(to.iter())
+            .flatten()
+            .any(|coordinate| !coordinate.is_finite())
+        {
+            return Err("homotopy waypoints must be finite");
+        }
+        Ok(Self { from, to })
+    }
+
+    /// Interpolates into a caller-owned buffer without allocating or starting a new transport.
+    pub fn sample_into(&self, progress: f64, output: &mut [[f64; 3]]) -> Result<(), &'static str> {
+        if output.len() != self.from.len() {
+            return Err("homotopy output has the wrong waypoint count");
+        }
+        let t = if progress.is_finite() {
+            progress.clamp(0.0, 1.0)
+        } else {
+            return Err("homotopy progress must be finite");
+        };
+        for (index, point) in output.iter_mut().enumerate() {
+            for axis in 0..3 {
+                point[axis] = self.from[index][axis] * (1.0 - t) + self.to[index][axis] * t;
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn waypoint_count(&self) -> usize {
+        self.from.len()
+    }
+}
+
 fn derivative(symbols: &ChristoffelSymbols, state: GeodesicState) -> GeodesicState {
     let mut acceleration = [0.0; 3];
     for (upper, component) in acceleration.iter_mut().enumerate() {
@@ -660,8 +707,8 @@ mod tests {
     use super::{
         metric_norm_squared, metric_norm_squared_scalar, AdaptiveRoutePlanner, AtomicGeodesicTable,
         ChristoffelSymbols, CongestionMetricAdapter, CurvatureMonitor, GeodesicIntegrator,
-        GeodesicState, LocalAtlas, LocalChart, MetricSample, MetricTensor, MetricWorker,
-        NodeLoadSample, QuicTransportFeedback, RouteEntry, RouteSnapshot,
+        GeodesicState, HomotopyPath, LocalAtlas, LocalChart, MetricSample, MetricTensor,
+        MetricWorker, NodeLoadSample, QuicTransportFeedback, RouteEntry, RouteSnapshot,
     };
     use std::time::Duration;
 
@@ -865,5 +912,21 @@ mod tests {
             .select_next_hop(&candidates)
             .expect("healthy route remains");
         assert_eq!(selected.1.next_node, 2);
+    }
+
+    #[test]
+    fn homotopy_transition_reaches_alternate_path_continuously() {
+        let path = HomotopyPath::new(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            vec![[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+        )
+        .expect("waypoints align");
+        let mut current = [[0.0; 3]; 2];
+        path.sample_into(0.0, &mut current).expect("start path");
+        assert_eq!(current[0], [0.0, 0.0, 0.0]);
+        path.sample_into(0.5, &mut current).expect("midpoint path");
+        assert_eq!(current[0], [0.0, 0.5, 0.0]);
+        path.sample_into(1.0, &mut current).expect("alternate path");
+        assert_eq!(current[0], [0.0, 1.0, 0.0]);
     }
 }
