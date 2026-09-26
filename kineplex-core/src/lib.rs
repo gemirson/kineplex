@@ -33,6 +33,8 @@ pub struct NodeConfig {
     pub advertise_ip: Option<IpAddr>,
     /// Peer addresses contacted while bootstrapping cluster membership.
     pub seeds: Vec<SocketAddr>,
+    /// Whether to enable native CPU sampling in this process.
+    pub enable_profiling: bool,
 }
 
 impl NodeConfig {
@@ -44,6 +46,7 @@ impl NodeConfig {
             port,
             advertise_ip: None,
             seeds,
+            enable_profiling: false,
         }
     }
 
@@ -51,6 +54,13 @@ impl NodeConfig {
     #[must_use]
     pub const fn with_advertise_ip(mut self, advertise_ip: Option<IpAddr>) -> Self {
         self.advertise_ip = advertise_ip;
+        self
+    }
+
+    /// Enables or disables native CPU profiling.
+    #[must_use]
+    pub const fn with_profiling(mut self, enable_profiling: bool) -> Self {
+        self.enable_profiling = enable_profiling;
         self
     }
 

@@ -44,6 +44,10 @@ struct Cli {
         value_parser = parse_seed
     )]
     seed: Vec<SocketAddr>,
+
+    /// Enable native CPU sampling and the debug flamegraph endpoint.
+    #[arg(long, default_value_t = false)]
+    enable_profiling: bool,
 }
 
 fn parse_node_port(value: &str) -> Result<u16, String> {
@@ -66,7 +70,9 @@ fn validate_adjacent_gossip_port(node_addr: SocketAddr) -> Result<(), String> {
 
 impl From<Cli> for NodeConfig {
     fn from(cli: Cli) -> Self {
-        Self::new(cli.bind_ip, cli.port, cli.seed).with_advertise_ip(cli.advertise_ip)
+        Self::new(cli.bind_ip, cli.port, cli.seed)
+            .with_advertise_ip(cli.advertise_ip)
+            .with_profiling(cli.enable_profiling)
     }
 }
 
@@ -209,6 +215,15 @@ mod tests {
             config.advertise_ip,
             Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)))
         );
+    }
+
+    #[test]
+    fn profiling_is_opt_in() {
+        let normal = parse_from(["kineplex-node"]).expect("default options parse");
+        let profiled = parse_from(["kineplex-node", "--enable-profiling"])
+            .expect("profiling flag parses");
+        assert!(!normal.enable_profiling);
+        assert!(profiled.enable_profiling);
     }
 
     #[test]

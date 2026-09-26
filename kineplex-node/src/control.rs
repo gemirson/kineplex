@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::profiling::CpuProfiler;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Json, Path, Query, Request};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -99,6 +100,7 @@ struct AllocationResponse {
 struct ControlState {
     routing_table: RoutingTable,
     graph_status: Arc<DashMap<Uuid, String>>,
+    profiler: Option<Arc<std::sync::Mutex<CpuProfiler>>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -152,6 +154,15 @@ impl ControlServer {
         address: SocketAddr,
         routing_table: RoutingTable,
     ) -> Result<Self, ControlServerError> {
+        Self::bind_with_routing_and_profiler(address, routing_table, None).await
+    }
+
+    /// Binds Control Plane routes with an optional process CPU profiler.
+    pub async fn bind_with_routing_and_profiler(
+        address: SocketAddr,
+        routing_table: RoutingTable,
+        profiler: Option<Arc<std::sync::Mutex<CpuProfiler>>>,
+    ) -> Result<Self, ControlServerError> {
         let listener = TcpListener::bind(address)
             .await
             .map_err(|error| ControlServerError::Server(error.to_string()))?;
@@ -162,6 +173,7 @@ impl ControlServer {
         let state = Arc::new(ControlState {
             routing_table,
             graph_status: Arc::new(DashMap::new()),
+            profiler,
         });
         let task = tokio::spawn(async move {
             serve(listener, router(state))
@@ -201,6 +213,7 @@ fn router(state: Arc<ControlState>) -> Router {
         .route("/tap", get(subscribe_tapping))
         .route("/graph_status/:graph_id", get(graph_status))
         .route("/metrics", get(prometheus_metrics))
+        .route("/debug/pprof/flamegraph", get(flamegraph))
         .route("/allocate_step", post(allocate_step))
         .route("/cancel_allocation", post(cancel_allocation))
         .with_state(state)
@@ -209,12 +222,43 @@ fn router(state: Arc<ControlState>) -> Router {
 }
 
 async fn prometheus_metrics() -> Response {
-    let mut response = Response::new(Body::from(kineplex_core::metrics::global().prometheus_text()));
+    let mut response = Response::new(Body::from(
+        kineplex_core::metrics::global().prometheus_text(),
+    ));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
     );
     response
+}
+
+async fn flamegraph(
+    axum::extract::State(state): axum::extract::State<Arc<ControlState>>,
+) -> Response {
+    let Some(profiler) = &state.profiler else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let profiler = match profiler.try_lock() {
+        Ok(profiler) => profiler,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    match profiler.flamegraph() {
+        Ok(svg) => {
+            let mut response = Response::new(Body::from(svg));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("image/svg+xml; charset=utf-8"),
+            );
+            response
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("flamegraph generation failed: {error}"),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn subscribe_tapping(Query(query): Query<TappingQuery>) -> Response {
@@ -314,8 +358,8 @@ async fn submit_graph(
                 .into_response();
         }
     }
-
     state.graph_status.insert(graph_id, "RUNNING".to_owned());
+
     tracing::info!(
         %graph_id,
         client_id = %payload.client_id,

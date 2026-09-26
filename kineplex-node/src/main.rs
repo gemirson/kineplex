@@ -1,6 +1,7 @@
 use std::fmt::Display;
 use std::io::Write;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 
 use kineplex_core::initialize_node_config;
 use kineplex_core::observability::init_tracing;
@@ -8,6 +9,7 @@ use kineplex_core::wasm::WasmRuntime;
 use kineplex_net::gossip::{gossip_addr, start, GossipConfig};
 use kineplex_node::cli;
 use kineplex_node::control::ControlServer;
+use kineplex_node::profiling::CpuProfiler;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -53,6 +55,20 @@ async fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let profiler = if config.enable_profiling {
+        match CpuProfiler::start(100) {
+            Ok(profiler) => {
+                tracing::warn!("native CPU profiling is enabled; sampling adds latency overhead");
+                Some(Arc::new(Mutex::new(profiler)))
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to start native CPU profiler");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     let gossip_bind_addr = match gossip_addr(config.bind_addr()) {
         Ok(addr) => addr,
         Err(error) => {
@@ -95,15 +111,20 @@ async fn run() -> ExitCode {
         }
     };
 
-    let control =
-        match ControlServer::bind_with_routing(config.bind_addr(), gossip.routing_table()).await {
-            Ok(server) => server,
-            Err(error) => {
-                let _shutdown_result = gossip.shutdown().await;
-                tracing::error!(%error, "failed to start Control Plane TCP server");
-                return ExitCode::FAILURE;
-            }
-        };
+    let control = match ControlServer::bind_with_routing_and_profiler(
+        config.bind_addr(),
+        gossip.routing_table(),
+        profiler,
+    )
+    .await
+    {
+        Ok(server) => server,
+        Err(error) => {
+            let _shutdown_result = gossip.shutdown().await;
+            tracing::error!(%error, "failed to start Control Plane TCP server");
+            return ExitCode::FAILURE;
+        }
+    };
 
     tracing::info!(
         bind_addr = %config.bind_addr(),
