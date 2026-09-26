@@ -2,6 +2,7 @@
 
 pub mod arrow_ffi;
 pub mod accumulator;
+pub mod arrow_concat;
 pub mod physical_plan;
 pub mod graph;
 pub mod observability;
