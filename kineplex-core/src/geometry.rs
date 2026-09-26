@@ -5,7 +5,9 @@ use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use std::collections::HashMap;
 
 /// Normalized local resource and transport measurements used by the metric model.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -279,6 +281,59 @@ pub struct LocalAtlas {
     charts: DashMap<ChartId, LocalChart>,
 }
 
+/// Stable edge identifier used by the geodesic lookup table.
+pub type RouteKey = u64;
+
+/// Immutable forwarding choice published by the Control Plane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RouteEntry {
+    pub next_node: u64,
+    pub resistance: f64,
+}
+
+/// Immutable route snapshot, built off-path and atomically swapped into service.
+#[derive(Clone, Debug, Default)]
+pub struct RouteSnapshot {
+    pub revision: u64,
+    pub routes: HashMap<RouteKey, RouteEntry>,
+}
+
+/// Lock-free read path for precomputed geodesic next-hop decisions.
+pub struct AtomicGeodesicTable {
+    current: ArcSwap<RouteSnapshot>,
+}
+
+impl Default for AtomicGeodesicTable {
+    fn default() -> Self {
+        Self::new(RouteSnapshot::default())
+    }
+}
+
+impl AtomicGeodesicTable {
+    #[must_use]
+    pub fn new(initial: RouteSnapshot) -> Self {
+        Self {
+            current: ArcSwap::from(Arc::new(initial)),
+        }
+    }
+
+    /// Atomically publishes a complete precomputed table without pausing readers.
+    pub fn publish(&self, snapshot: RouteSnapshot) {
+        self.current.store(Arc::new(snapshot));
+    }
+
+    /// Copies a route entry from the active snapshot without allocating or taking a lock.
+    #[must_use]
+    pub fn lookup(&self, edge: RouteKey) -> Option<RouteEntry> {
+        self.current.load().routes.get(&edge).copied()
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.current.load().revision
+    }
+}
+
 impl LocalAtlas {
     #[must_use]
     pub fn new() -> Self {
@@ -336,7 +391,10 @@ impl LocalAtlas {
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalAtlas, LocalChart, MetricSample, MetricTensor, MetricWorker};
+    use super::{
+        AtomicGeodesicTable, LocalAtlas, LocalChart, MetricSample, MetricTensor, MetricWorker,
+        RouteEntry, RouteSnapshot,
+    };
     use std::time::Duration;
 
     #[test]
@@ -388,5 +446,36 @@ mod tests {
         assert!((blended[0] - 0.0).abs() < 1.0);
         assert!(atlas.coordinates([10.0, 10.0, 10.0]).is_none());
         assert_eq!(atlas.len(), 2);
+    }
+
+    #[test]
+    fn route_lookup_observes_atomic_snapshot_replacement() {
+        let table = AtomicGeodesicTable::new(RouteSnapshot {
+            revision: 1,
+            routes: [(
+                7,
+                RouteEntry {
+                    next_node: 42,
+                    resistance: 1.0,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        });
+        assert_eq!(table.lookup(7).map(|entry| entry.next_node), Some(42));
+        table.publish(RouteSnapshot {
+            revision: 2,
+            routes: [(
+                7,
+                RouteEntry {
+                    next_node: 99,
+                    resistance: 0.5,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        });
+        assert_eq!(table.revision(), 2);
+        assert_eq!(table.lookup(7).map(|entry| entry.next_node), Some(99));
     }
 }

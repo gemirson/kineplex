@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 arrow.workspace = true
+arc-swap.workspace = true
 chrono.workspace = true
 petgraph.workspace = true
 serde.workspace = true
@@ -32,6 +33,10 @@ criterion.workspace = true
 
 [[bench]]
 name = "filter_f32"
+harness = false
+
+[[bench]]
+name = "geodesic_lookup"
 harness = false
 
 [lints]
