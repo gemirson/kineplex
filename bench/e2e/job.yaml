@@ -1,0 +1,58 @@
+# Test job configuration for E2E harness
+# Used to validate FT-071 (data plane distributed) and FT-072 (Parquet output)
+
+name: "e2e-test-job"
+description: "End-to-end test job for distributed data plane"
+
+# Job stages (matches FT-071 pipeline)
+stages:
+  - name: receptor
+    description: "Input data reception stage"
+    config:
+      input_format: "parquet"
+      validation: true
+
+  - name: wasm
+    description: "Wasm execution stage"
+    config:
+      module: "test_geometry.wasm"
+      max_memory_mb: 512
+      max_fuel: 1000000
+      enable_simd: true
+
+  - name: aggregation
+    description: "Aggregation stage"
+    config:
+      aggregation_type: "sum"
+      group_by: ["region_id"]
+
+  - name: terminal
+    description: "Terminal output stage"
+    config:
+      output_format: "parquet"
+      output_path: "/tmp/kineplex-output"
+      partition_by: "timestamp_hour"
+
+# Expected output
+expected_output:
+  parquet_files:
+    - pattern: "part-*.parquet"
+      min_count: 1
+  rows_processed:
+    min: 1000
+  stages_completed:
+    - receptor
+    - wasm
+    - aggregation
+    - terminal
+
+# Metrics to collect
+metrics:
+  - name: "stage_latency_ms"
+    type: "histogram"
+  - name: "total_execution_time_ms"
+    type: "histogram"
+  - name: "rows_processed"
+    type: "counter"
+  - name: "memory_peak_bytes"
+    type: "gauge"
