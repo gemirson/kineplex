@@ -184,3 +184,57 @@ impl From<std::io::Error> for ReceptorError {
         Self::Io(value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::Receptor;
+
+    #[tokio::test]
+    async fn csv_source_reads_rows_in_bounded_pages() {
+        let path = std::env::temp_dir().join(format!(
+            "kineplex-receptor-{}-{}.csv",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        tokio::fs::write(&path, "score\n1.0\n2.0\n3.0\n")
+            .await
+            .expect("fixture file writes");
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "score",
+            DataType::Float32,
+            false,
+        )]));
+        let mut source = Receptor::open_csv(&path, schema, 2, true)
+            .await
+            .expect("CSV source opens");
+        assert_eq!(
+            source
+                .next_batch()
+                .await
+                .expect("first page")
+                .expect("batch")
+                .num_rows(),
+            2
+        );
+        assert_eq!(
+            source
+                .next_batch()
+                .await
+                .expect("second page")
+                .expect("batch")
+                .num_rows(),
+            1
+        );
+        assert!(source.next_batch().await.expect("EOF").is_none());
+        tokio::fs::remove_file(path)
+            .await
+            .expect("fixture is removed");
+    }
+}
