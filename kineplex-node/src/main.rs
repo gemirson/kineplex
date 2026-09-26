@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use kineplex_core::initialize_node_config;
 use kineplex_core::observability::init_tracing;
+use kineplex_core::wasm::WasmRuntime;
 use kineplex_net::gossip::{gossip_addr, start, GossipConfig};
 use kineplex_node::cli;
 use kineplex_node::control::ControlServer;
@@ -24,6 +25,11 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> ExitCode {
+    if let Err(error) = WasmRuntime::new() {
+        tracing::error!(%error, "failed to initialize Wasmtime runtime");
+        return ExitCode::FAILURE;
+    }
+
     let parsed_config = match cli::parse() {
         Ok(config) => config,
         Err(error) => return print_clap_error(&error),
