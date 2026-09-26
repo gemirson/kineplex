@@ -4,8 +4,11 @@ extern crate self as kineplex_sdk;
 
 pub use kineplex_sdk_macros::synapse;
 
+pub mod arrow;
+
 pub mod prelude {
     pub use crate::synapse;
+    pub use crate::arrow::{KineColumnExt, KineRecordBatchBuilder};
     pub use arrow::array::RecordBatch;
 }
 
