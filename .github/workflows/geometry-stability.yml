@@ -1,17 +1,37 @@
 name: Geometry stability
 
 on:
-  pull_request:
-  push:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kineplex-geometry-stability
+  cancel-in-progress: true
 
 jobs:
   stress:
+    name: Geometry stress and benchmark
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Check geometric stress test
-        run: cargo test -p kineplex-core --test geometry_deformation_stress
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Run geometric stress test
+        run: cargo test -p kineplex-core --test geometry_deformation_stress --locked
+
       - name: Run geodesic mutation benchmark
-        run: cargo bench -p kineplex-core --bench geometry_stability -- --noplot
+        run: cargo bench -p kineplex-core --bench geometry_stability --locked -- --noplot
