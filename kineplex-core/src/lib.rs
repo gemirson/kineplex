@@ -10,6 +10,7 @@ pub mod spike_tap;
 pub mod receptor;
 pub mod terminal;
 pub mod graph;
+pub mod metrics;
 pub mod observability;
 pub mod wasm;
 

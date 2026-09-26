@@ -42,6 +42,7 @@ pub fn build_outbound_spike(
             .finish()
             .map_err(|error| EgressError::Arrow(error.to_string()))?;
     }
+    crate::metrics::global().record_spike(payload.len());
     let (header, sequence) = build_synapse_header(synapse, flags, payload.len())?;
     Ok(OutboundSpike {
         packet: OwnedSynapsePacket::new(header, payload),

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Json, Path, Query, Request};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -200,11 +200,21 @@ fn router(state: Arc<ControlState>) -> Router {
         .route("/submit_graph", post(submit_graph))
         .route("/tap", get(subscribe_tapping))
         .route("/graph_status/:graph_id", get(graph_status))
+        .route("/metrics", get(prometheus_metrics))
         .route("/allocate_step", post(allocate_step))
         .route("/cancel_allocation", post(cancel_allocation))
         .with_state(state)
         .layer(DefaultBodyLimit::max(GRAPH_BODY_LIMIT_BYTES))
         .layer(middleware::from_fn(request_timeout))
+}
+
+async fn prometheus_metrics() -> Response {
+    let mut response = Response::new(Body::from(kineplex_core::metrics::global().prometheus_text()));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+    );
+    response
 }
 
 async fn subscribe_tapping(Query(query): Query<TappingQuery>) -> Response {
@@ -290,6 +300,7 @@ async fn submit_graph(
         Err(error) => return bad_request(format!("invalid graph: {error}")),
     };
     let graph_id = Uuid::new_v4();
+    kineplex_core::metrics::global().set_topology(state.routing_table.len(), graph.edge_count(), 0);
     state.graph_status.insert(graph_id, "ALLOCATING".to_owned());
 
     if !state.routing_table.is_empty() {

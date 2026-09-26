@@ -253,9 +253,12 @@ impl WasmRuntime {
         let function = instance
             .get_typed_func::<(), f32>(&mut store, export)
             .map_err(WasmExecutionError::Export)?;
-        function
+        let started = std::time::Instant::now();
+        let result = function
             .call(&mut store, ())
-            .map_err(WasmExecutionError::Trap)
+            .map_err(WasmExecutionError::Trap);
+        crate::metrics::global().record_wasm_execution(started.elapsed());
+        result
     }
 
     /// Executes the standard `kineplex_run(i32, i32) -> i32` Arrow IPC ABI.
@@ -310,6 +313,7 @@ impl WasmRuntime {
             .call(&mut store, descriptor.len() as i32)
             .map_err(WasmExecutionError::Trap)?;
         let mut output_allocation = None;
+        let started = std::time::Instant::now();
         let result = (|| {
             write_guest_memory(&memory, &mut store, input_pointer, &input_bytes)?;
             write_guest_memory(&memory, &mut store, descriptor_pointer, &descriptor)?;
@@ -363,6 +367,7 @@ impl WasmRuntime {
                 let _ = deallocate.call(&mut store, (descriptor_pointer, descriptor.len() as i32));
             }
         }
+        crate::metrics::global().record_wasm_execution(started.elapsed());
         result
     }
 
@@ -444,9 +449,12 @@ impl WasmInstance {
             .instance
             .get_typed_func::<(), ()>(&mut self.store, export)
             .map_err(WasmExecutionError::Export)?;
-        function
+        let started = std::time::Instant::now();
+        let result = function
             .call(&mut self.store, ())
-            .map_err(WasmExecutionError::Trap)
+            .map_err(WasmExecutionError::Trap);
+        crate::metrics::global().record_wasm_execution(started.elapsed());
+        result
     }
 }
 
