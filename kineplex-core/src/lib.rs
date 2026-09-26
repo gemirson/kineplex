@@ -6,6 +6,7 @@ pub mod arrow_concat;
 pub mod buffer_recycle;
 pub mod egress;
 pub mod physical_plan;
+pub mod spike_tap;
 pub mod receptor;
 pub mod terminal;
 pub mod graph;

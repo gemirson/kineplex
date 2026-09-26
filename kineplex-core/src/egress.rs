@@ -20,7 +20,9 @@ pub fn build_synapse_header(
     let sequence = synapse.next_sequence();
     let mut header = HeaderBuffer::new();
     header.write_header(synapse.graph_id, synapse.id, sequence, flags, payload_size);
-    Ok((header.buffer().to_vec(), sequence))
+    let header = header.buffer().to_vec();
+    let _published = crate::spike_tap::SpikeTap::global().publish_header(&header);
+    Ok((header, sequence))
 }
 
 /// Serializes an Arrow batch to IPC and couples it to the updated synapse header.

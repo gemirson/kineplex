@@ -6,13 +6,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{DefaultBodyLimit, Json, Request};
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::extract::{DefaultBodyLimit, Json, Query, Request};
+use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{serve, Router};
+use futures_util::stream;
 use kineplex_core::graph::KineGraph;
+use kineplex_core::spike_tap::{SpikeTap, TappedSpike};
 use kineplex_net::routing::RoutingTable;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -62,6 +65,12 @@ pub struct SubmitGraphResponse {
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+struct TappingQuery {
+    graph_id: u64,
+    synapse_id: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -178,11 +187,45 @@ impl ControlServer {
 fn router(state: Arc<ControlState>) -> Router {
     Router::new()
         .route("/submit_graph", post(submit_graph))
+        .route("/tap", get(subscribe_tapping))
         .route("/allocate_step", post(allocate_step))
         .route("/cancel_allocation", post(cancel_allocation))
         .with_state(state)
         .layer(DefaultBodyLimit::max(GRAPH_BODY_LIMIT_BYTES))
         .layer(middleware::from_fn(request_timeout))
+}
+
+async fn subscribe_tapping(Query(query): Query<TappingQuery>) -> Response {
+    let subscription = SpikeTap::global().subscribe();
+    let events = stream::unfold(
+        (subscription, query.graph_id, query.synapse_id),
+        |(mut subscription, graph_id, synapse_id)| async move {
+            loop {
+                let event = subscription.recv().await?;
+                if event.graph_id == graph_id && event.synapse_id == synapse_id {
+                    let line = tapping_json_line(&event);
+                    return Some((
+                        Ok::<Vec<u8>, std::convert::Infallible>(line),
+                        (subscription, graph_id, synapse_id),
+                    ));
+                }
+            }
+        },
+    );
+    let mut response = Response::new(Body::from_stream(events));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/x-ndjson"
+            .parse()
+            .expect("static content type is valid"),
+    );
+    response
+}
+
+fn tapping_json_line(event: &TappedSpike) -> Vec<u8> {
+    let mut line = serde_json::to_vec(event).unwrap_or_default();
+    line.push(b'\n');
+    line
 }
 
 async fn request_timeout(request: Request, next: Next) -> Response {
