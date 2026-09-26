@@ -3,6 +3,11 @@
 Documentação formal do harness de stress test e dos benchmarks Criterion para a
 tabela de geometria de roteamento do KinePlex (`kineplex-core`).
 
+## Referência de prontidão
+
+Para o backlog técnico proposto de evolução para prontidão >=95%, consulte
+`docs/readiness-95-backlog.md`.
+
 ---
 
 ## Ambiente de referência
