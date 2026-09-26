@@ -1,0 +1,6 @@
+.git
+target
+**/target
+bench/e2e/data
+bench/e2e/report.json
+**/__pycache__

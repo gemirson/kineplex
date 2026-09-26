@@ -1,0 +1,51 @@
+services:
+  node-1:
+    build:
+      context: ../..
+      dockerfile: bench/e2e/Dockerfile
+    image: kineplex-e2e:local
+    command: ["--bind-ip", "0.0.0.0", "--advertise-ip", "172.28.0.11", "--port", "8000"]
+    ports:
+      - "8000:8000"
+      - "8001:8001/udp"
+    volumes:
+      - ./data:/benchmark
+    networks:
+      kineplex:
+        ipv4_address: 172.28.0.11
+
+  node-2:
+    image: kineplex-e2e:local
+    depends_on: [node-1]
+    command: ["--bind-ip", "0.0.0.0", "--advertise-ip", "172.28.0.12", "--port", "8000", "--seed", "172.28.0.11:8000"]
+    volumes:
+      - ./data:/benchmark
+    networks:
+      kineplex:
+        ipv4_address: 172.28.0.12
+
+  node-3:
+    image: kineplex-e2e:local
+    depends_on: [node-1]
+    command: ["--bind-ip", "0.0.0.0", "--advertise-ip", "172.28.0.13", "--port", "8000", "--seed", "172.28.0.11:8000"]
+    volumes:
+      - ./data:/benchmark
+    networks:
+      kineplex:
+        ipv4_address: 172.28.0.13
+
+  node-4:
+    image: kineplex-e2e:local
+    depends_on: [node-1]
+    command: ["--bind-ip", "0.0.0.0", "--advertise-ip", "172.28.0.14", "--port", "8000", "--seed", "172.28.0.11:8000"]
+    volumes:
+      - ./data:/benchmark
+    networks:
+      kineplex:
+        ipv4_address: 172.28.0.14
+
+networks:
+  kineplex:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
