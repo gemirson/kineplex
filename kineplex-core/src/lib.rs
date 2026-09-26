@@ -10,6 +10,7 @@ pub mod spike_tap;
 pub mod receptor;
 pub mod reliability;
 pub mod terminal;
+pub mod topology;
 pub mod graph;
 pub mod geometry;
 pub mod metrics;
