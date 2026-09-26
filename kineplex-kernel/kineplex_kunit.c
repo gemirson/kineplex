@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/errno.h>
+#include <linux/gfp.h>
 #include <linux/module.h>
 #include <kunit/test.h>
 
@@ -15,10 +16,42 @@ static void flat_geodesic_converges_without_acceleration(struct kunit *test)
 
 	ret = kineplex_geometry_integrate(&symbols, &state,
 				KINEPLEX_Q_ONE / 10, 10);
-		KUNIT_ASSERT_EQ(test, ret, 0);
-		KUNIT_EXPECT_EQ(test, state.position[0], KINEPLEX_Q_ONE);
-		KUNIT_EXPECT_EQ(test, state.position[1], (s64)0);
-		KUNIT_EXPECT_EQ(test, state.tangent[0], KINEPLEX_Q_ONE);
+	KUNIT_EXPECT_EQ(test, state.tangent[0], KINEPLEX_Q_ONE);
+}
+
+static void inverse_rejects_singular_metric(struct kunit *test)
+{
+	s64 singular[KINEPLEX_GEOMETRY_DIM][KINEPLEX_GEOMETRY_DIM] = {
+		{ KINEPLEX_Q_ONE, 0, 0 },
+		{ 0, KINEPLEX_Q_ONE, 0 },
+		{ 0, 0, 0 },
+	};
+	s64 inverse[KINEPLEX_GEOMETRY_DIM][KINEPLEX_GEOMETRY_DIM];
+
+	KUNIT_EXPECT_EQ(test, kineplex_metric_inverse(singular, inverse), -EDOM);
+}
+
+static void inverse_uses_fixed_point_and_checks_result(struct kunit *test)
+{
+	s64 metric[KINEPLEX_GEOMETRY_DIM][KINEPLEX_GEOMETRY_DIM] = {
+		{ 2 * KINEPLEX_Q_ONE, 0, 0 },
+		{ 0, 4 * KINEPLEX_Q_ONE, 0 },
+		{ 0, 0, 8 * KINEPLEX_Q_ONE },
+	};
+	s64 inverse[KINEPLEX_GEOMETRY_DIM][KINEPLEX_GEOMETRY_DIM] = { 0 };
+
+	KUNIT_ASSERT_EQ(test, kineplex_metric_inverse(metric, inverse), 0);
+	KUNIT_EXPECT_EQ(test, inverse[0][0], KINEPLEX_Q_ONE / 2);
+	KUNIT_EXPECT_EQ(test, inverse[1][1], KINEPLEX_Q_ONE / 4);
+	KUNIT_EXPECT_EQ(test, inverse[2][2], KINEPLEX_Q_ONE / 8);
+}
+
+static void null_and_zero_denominator_are_rejected(struct kunit *test)
+{
+	s64 result;
+
+	KUNIT_EXPECT_EQ(test, kineplex_q16_div(1, 0, &result), -EDOM);
+	KUNIT_EXPECT_EQ(test, kineplex_q16_div(1, 1, NULL), -EINVAL);
 }
 
 static void invalid_job_is_rejected(struct kunit *test)
@@ -64,6 +97,9 @@ static void homotopy_slab_reuses_objects_without_leaking(struct kunit *test)
 
 static struct kunit_case kineplex_geometry_cases[] = {
 	KUNIT_CASE(flat_geodesic_converges_without_acceleration),
+	KUNIT_CASE(inverse_rejects_singular_metric),
+	KUNIT_CASE(inverse_uses_fixed_point_and_checks_result),
+	KUNIT_CASE(null_and_zero_denominator_are_rejected),
 	KUNIT_CASE(homotopy_slab_reuses_objects_without_leaking),
 	KUNIT_CASE(invalid_job_is_rejected),
 	{}

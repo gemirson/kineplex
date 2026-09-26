@@ -6,6 +6,7 @@
 #include <linux/overflow.h>
 #include <linux/sched.h>
 #include <linux/spinlock.h>
+#include <linux/string.h>
 #include <linux/workqueue.h>
 
 #include "include/kineplex.h"
@@ -19,32 +20,6 @@ struct kineplex_geometry_worker {
 };
 
 static struct kineplex_geometry_worker kineplex_worker;
-
-int kineplex_q16_mul(s64 left, s64 right, s64 *result)
-{
-	s64 product;
-
-	if (unlikely(!result))
-		return -EINVAL;
-	if (check_mul_overflow(left, right, &product))
-		return -ERANGE;
-	*result = div_s64(product, KINEPLEX_Q_ONE);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(kineplex_q16_mul);
-
-int kineplex_q16_div(s64 numerator, s64 denominator, s64 *result)
-{
-	s64 scaled;
-
-	if (unlikely(!result || !denominator))
-		return -EDOM;
-	if (check_mul_overflow(numerator, KINEPLEX_Q_ONE, &scaled))
-		return -ERANGE;
-	*result = div_s64(scaled, denominator);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(kineplex_q16_div);
 
 static s64 kineplex_ratio(u64 numerator, u64 denominator)
 {

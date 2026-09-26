@@ -17,3 +17,7 @@ KUnit can be enabled with `CONFIG_KUNIT=y` and `CONFIG_KINEPLEX_KUNIT_TEST=m` in
 ## FT-067 — homotopy slab allocation
 
 Transient deformation objects are allocated from the custom `kmem_cache` named `kineplex_homotopy_cache` and are zeroed before publication. Allocation, free, and in-use counters are exposed to KUnit; the test performs 10,000 allocate/free cycles and requires zero objects in use before cache destruction. `kineplex_homotopy_exit()` refuses to destroy a cache with outstanding objects, preventing unload-time leaks.
+
+## FT-068 — anti-panic mathematical sandbox
+
+All divisions used by the driver pass through checked Q16.16 helpers. The 3x3 metric inverse calculates a fixed-point determinant and cofactors, rejects a zero or sub-resolution determinant with `-EDOM`, and reports arithmetic overflow instead of allowing undefined behavior. The KUnit suite injects a singular tensor and verifies that it is rejected without a fault; it also verifies diagonal inversion and null/zero-denominator guards.
