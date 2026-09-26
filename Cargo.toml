@@ -1,5 +1,5 @@
 [workspace]
-members = ["kineplex-core", "kineplex-net", "kineplex-node"]
+members = ["kineplex-core", "kineplex-net", "kineplex-node", "kineplex-sdk", "kineplex-sdk-macros"]
 resolver = "2"
 
 [workspace.package]
