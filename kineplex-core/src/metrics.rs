@@ -16,6 +16,10 @@ pub struct MetricsRegistry {
     topology_nodes: AtomicU64,
     topology_edges: AtomicU64,
     curvature_tensors: AtomicU64,
+    riemann_curvature_bits: AtomicU64,
+    geodesic_revision: AtomicU64,
+    geodesic_lookups: AtomicU64,
+    atlas_invalidations: AtomicU64,
     cache: Mutex<Option<(Instant, String)>>,
 }
 
@@ -31,6 +35,10 @@ impl MetricsRegistry {
             topology_nodes: AtomicU64::new(0),
             topology_edges: AtomicU64::new(0),
             curvature_tensors: AtomicU64::new(0),
+            riemann_curvature_bits: AtomicU64::new(0.0_f64.to_bits()),
+            geodesic_revision: AtomicU64::new(0),
+            geodesic_lookups: AtomicU64::new(0),
+            atlas_invalidations: AtomicU64::new(0),
             cache: Mutex::new(None),
         }
     }
@@ -62,6 +70,28 @@ impl MetricsRegistry {
         self.topology_edges.store(edges as u64, Ordering::Relaxed);
         self.curvature_tensors
             .store(curvature_tensors as u64, Ordering::Relaxed);
+    }
+
+    pub fn observe_riemann_curvature(&self, curvature: f64) {
+        let value = if curvature.is_finite() {
+            curvature.max(0.0)
+        } else {
+            f64::MAX
+        };
+        self.riemann_curvature_bits
+            .store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_geodesic_revision(&self, revision: u64) {
+        self.geodesic_revision.store(revision, Ordering::Relaxed);
+    }
+
+    pub fn record_geodesic_lookup(&self) {
+        self.geodesic_lookups.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_atlas_invalidation(&self) {
+        self.atlas_invalidations.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Returns Prometheus text, reusing a one-second snapshot when available.
@@ -129,6 +159,26 @@ impl MetricsRegistry {
             "kineplex_curvature_tensors {}\n",
             self.curvature_tensors.load(Ordering::Relaxed)
         ));
+        out.push_str("# HELP kineplex_riemann_curvature Current local Riemann curvature norm.\n# TYPE kineplex_riemann_curvature gauge\n");
+        out.push_str(&format!(
+            "kineplex_riemann_curvature {}\n",
+            f64::from_bits(self.riemann_curvature_bits.load(Ordering::Relaxed))
+        ));
+        out.push_str("# HELP kineplex_geodesic_route_revision Active route snapshot revision.\n# TYPE kineplex_geodesic_route_revision gauge\n");
+        out.push_str(&format!(
+            "kineplex_geodesic_route_revision {}\n",
+            self.geodesic_revision.load(Ordering::Relaxed)
+        ));
+        out.push_str("# HELP kineplex_geodesic_route_lookups_total Geodesic route lookup count.\n# TYPE kineplex_geodesic_route_lookups_total counter\n");
+        out.push_str(&format!(
+            "kineplex_geodesic_route_lookups_total {}\n",
+            self.geodesic_lookups.load(Ordering::Relaxed)
+        ));
+        out.push_str("# HELP kineplex_atlas_invalidations_total Local charts invalidated by curvature.\n# TYPE kineplex_atlas_invalidations_total counter\n");
+        out.push_str(&format!(
+            "kineplex_atlas_invalidations_total {}\n",
+            self.atlas_invalidations.load(Ordering::Relaxed)
+        ));
         out
     }
 }
@@ -153,6 +203,10 @@ mod tests {
         metrics.record_wasm_execution(Duration::from_millis(3));
         metrics.record_cqe_drop();
         metrics.set_topology(4, 3, 2);
+        metrics.observe_riemann_curvature(0.25);
+        metrics.set_geodesic_revision(8);
+        metrics.record_geodesic_lookup();
+        metrics.record_atlas_invalidation();
         let text = metrics.render();
         for metric in [
             "kineplex_spikes_total 1",
@@ -161,6 +215,10 @@ mod tests {
             "kineplex_cqe_drops 1",
             "kineplex_topology_nodes 4",
             "kineplex_curvature_tensors 2",
+            "kineplex_riemann_curvature 0.25",
+            "kineplex_geodesic_route_revision 8",
+            "kineplex_geodesic_route_lookups_total 1",
+            "kineplex_atlas_invalidations_total 1",
         ] {
             assert!(text.contains(metric), "missing {metric}");
         }

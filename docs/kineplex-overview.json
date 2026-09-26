@@ -50,6 +50,23 @@
       "title": "Curvature tensors",
       "gridPos": { "x": 12, "y": 16, "w": 12, "h": 5 },
       "targets": [{ "expr": "kineplex_curvature_tensors", "legendFormat": "tensors", "refId": "A" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Riemann curvature norm",
+      "gridPos": { "x": 0, "y": 21, "w": 12, "h": 7 },
+      "targets": [{ "expr": "kineplex_riemann_curvature", "legendFormat": "curvature", "refId": "A" }]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Geodesic route lookups / invalidations",
+      "gridPos": { "x": 12, "y": 21, "w": 12, "h": 7 },
+      "targets": [
+        { "expr": "rate(kineplex_geodesic_route_lookups_total[1m])", "legendFormat": "lookups/s", "refId": "A" },
+        { "expr": "rate(kineplex_atlas_invalidations_total[1m])", "legendFormat": "invalidations/s", "refId": "B" }
+      ]
     }
   ]
 }

@@ -353,6 +353,7 @@ impl AtomicGeodesicTable {
 
     /// Atomically publishes a complete precomputed table without pausing readers.
     pub fn publish(&self, snapshot: RouteSnapshot) {
+        crate::metrics::global().set_geodesic_revision(snapshot.revision);
         self.current.store(Arc::new(snapshot));
     }
 
@@ -374,6 +375,7 @@ impl AtomicGeodesicTable {
     /// Copies a route entry from the active snapshot without allocating or taking a lock.
     #[must_use]
     pub fn lookup(&self, edge: RouteKey) -> Option<RouteEntry> {
+        crate::metrics::global().record_geodesic_lookup();
         self.current.load().routes.get(&edge).copied()
     }
 
@@ -563,8 +565,11 @@ impl CurvatureMonitor {
             }
         });
         if curvature < self.threshold || atlas.remove(chart_id).is_none() {
+            crate::metrics::global().observe_riemann_curvature(curvature);
             return None;
         }
+        crate::metrics::global().observe_riemann_curvature(curvature);
+        crate::metrics::global().record_atlas_invalidation();
         let atlas_revision = self
             .revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
