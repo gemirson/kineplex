@@ -1,0 +1,104 @@
+# CI/CD Pipeline para Testes Funcionais do Driver - FT-084
+# Testes funcionais KUnit + smoke io_uring/debugfs
+
+name: Kernel Driver Tests
+
+on:
+  push:
+    branches: [main, develop, 'feature/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # KUnit tests - testes unitários do kernel
+  kunit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kernel build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            kmod \
+            linux-headers-$(uname -r) \
+            pkg-config
+
+      - name: Build and load KUnit tests
+        run: |
+          # Build KUnit tests
+          make KUNIT=1
+          
+          # Run KUnit tests (requires root)
+          sudo sh -c './run_kunit.sh > kunit_results.xml'
+          
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: kunit-results
+          path: kunit_results.xml
+
+  # Smoke tests - io_uring e debugfs
+  smoke-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build driver
+        run: make
+
+      - name: Load driver module
+        run: |
+          sudo insmod kineplex.ko
+          lsmod | grep kineplex
+
+      - name: Test io_uring command path
+        run: |
+          # Setup io_uring
+          echo "Testing IORING_OP_URING_CMD..."
+          ./test_io_uring_cmd.sh
+
+      - name: Test debugfs interface
+        run: |
+          # Mount debugfs
+          sudo mount -t debugfs none /sys/kernel/debug
+          
+          # Test debugfs read
+          echo "Testing debugfs interface..."
+          cat /sys/kernel/debug/kineplex/status
+          cat /sys/kernel/debug/kineplex/metrics
+
+      - name: Unload driver
+        run: |
+          sudo rmmod kineplex
+
+  # Geometric invariant tests
+  geometric-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run geometric validation
+        run: |
+          # Test geometric invariants
+          ./test_geometric_invariants.sh
+
+  # Integration test summary
+  test-summary:
+    needs: [kunit-tests, smoke-tests, geometric-tests]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate test summary
+        run: |
+          echo "## Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| KUnit | ${{ needs.kunit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke Tests | ${{ needs.smoke-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Geometric Tests | ${{ needs.geometric-tests.result }} |" >> $GITHUB_STEP_SUMMARY
