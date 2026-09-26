@@ -1,0 +1,50 @@
+[package]
+name = "kineplex-core"
+description = "Core configuration and domain types for KinePlex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+arrow.workspace = true
+arc-swap.workspace = true
+chrono.workspace = true
+petgraph.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+libc.workspace = true
+parquet.workspace = true
+quiche.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+dashmap.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+wat = "=1.0.85"
+criterion.workspace = true
+
+[[bench]]
+name = "filter_f32"
+harness = false
+
+[[bench]]
+name = "geodesic_lookup"
+harness = false
+
+[[bench]]
+name = "geometry_stability"
+harness = false
+
+[lints]
+workspace = true

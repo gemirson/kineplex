@@ -1,0 +1,23 @@
+[package]
+name = "kineplex-e2e-wasm-filters"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "filter_gt_10"
+path = "src/bin/filter_gt_10.rs"
+
+[[bin]]
+name = "filter_gt_20"
+path = "src/bin/filter_gt_20.rs"
+
+[[bin]]
+name = "filter_gt_30"
+path = "src/bin/filter_gt_30.rs"
+
+[dependencies]
+arrow = { version = "=51.0.0", features = ["ffi"] }
+chrono = "=0.4.34"
+kineplex-sdk = { path = "../../../kineplex-sdk" }

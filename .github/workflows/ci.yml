@@ -1,0 +1,132 @@
+name: KinePlex CI
+
+on:
+  push:
+    branches:
+      - 'feat/**'
+      - develop
+      - homolog
+      - main
+  pull_request:
+    branches:
+      - develop
+      - homolog
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kineplex-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-flow:
+    name: Branch flow policy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate promotion direction
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          case "${BASE_BRANCH}:${HEAD_BRANCH}" in
+            develop:feat/*)
+              echo "Allowed promotion: ${HEAD_BRANCH} -> develop"
+              ;;
+            homolog:develop)
+              echo "Allowed promotion: develop -> homolog"
+              ;;
+            main:homolog)
+              echo "Allowed promotion: homolog -> main"
+              ;;
+            *)
+              echo "Invalid promotion: ${HEAD_BRANCH} -> ${BASE_BRANCH}"
+              echo "Expected feat/* -> develop -> homolog -> main"
+              exit 1
+              ;;
+          esac
+
+  rust:
+    name: Rust build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Print toolchain information
+        run: |
+          rustc --version --verbose
+          cargo --version
+
+      - name: Run complete workspace test set
+        run: cargo test --workspace --locked
+
+      - name: Run geometry stress test
+        run: cargo test -p kineplex-core --test geometry_stress --locked
+
+      - name: Run zero-allocation geometry test
+        run: cargo test -p kineplex-core --test geometry_allocations --locked
+
+      - name: Run deformation stress test
+        run: cargo test -p kineplex-core --test geometry_deformation_stress --locked
+
+      - name: Run plane-isolation tests
+        run: cargo test -p kineplex-core --test plane_isolation_io_contamination --locked
+
+  python:
+    name: E2E harness syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: bench/e2e/requirements.txt
+
+      - name: Check E2E runner syntax
+        run: python -m py_compile bench/e2e/run_e2e.py
+
+  kernel-source:
+    name: Kernel driver source checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify kernel driver layout and required hooks
+        run: |
+          test -f kineplex-kernel/Makefile
+          test -f kineplex-kernel/Kconfig
+          test -f kineplex-kernel/kineplex_geometry.c
+          test -f kineplex-kernel/kineplex_homotopy.c
+          test -f kineplex-kernel/kineplex_math.c
+          test -f kineplex-kernel/kineplex_uring.c
+          test -f kineplex-kernel/kineplex_debugfs.c
+          grep -q 'WQ_HIGHPRI' kineplex-kernel/kineplex_geometry.c
+          grep -q 'cond_resched' kineplex-kernel/kineplex_geometry.c
+          grep -q 'kineplex_homotopy_cache' kineplex-kernel/kineplex_homotopy.c
+          grep -q 'IORING_OP_KINEPLEX_ROUTE' kineplex-kernel/kineplex_uring.c
+          grep -q 'debugfs_create_dir("kineplex"' kineplex-kernel/kineplex_debugfs.c

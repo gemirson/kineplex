@@ -1,0 +1,72 @@
+{
+  "title": "KinePlex Overview",
+  "uid": "kineplex-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Spike throughput",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [{ "expr": "rate(kineplex_spikes_total[1m])", "legendFormat": "spikes/s", "refId": "A" }]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Arrow payload bandwidth",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [{ "expr": "rate(kineplex_arrow_bytes_total[1m])", "legendFormat": "bytes/s", "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Wasm execution p95 (ms)",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(kineplex_wasm_execution_ms_bucket[5m])))", "legendFormat": "p95", "refId": "A" }]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Dropped CQEs",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [{ "expr": "rate(kineplex_cqe_drops[5m])", "legendFormat": "drops/s", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Known topology nodes / edges",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 5 },
+      "targets": [
+        { "expr": "kineplex_topology_nodes", "legendFormat": "nodes", "refId": "A" },
+        { "expr": "kineplex_topology_edges", "legendFormat": "edges", "refId": "B" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Curvature tensors",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 5 },
+      "targets": [{ "expr": "kineplex_curvature_tensors", "legendFormat": "tensors", "refId": "A" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Riemann curvature norm",
+      "gridPos": { "x": 0, "y": 21, "w": 12, "h": 7 },
+      "targets": [{ "expr": "kineplex_riemann_curvature", "legendFormat": "curvature", "refId": "A" }]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Geodesic route lookups / invalidations",
+      "gridPos": { "x": 12, "y": 21, "w": 12, "h": 7 },
+      "targets": [
+        { "expr": "rate(kineplex_geodesic_route_lookups_total[1m])", "legendFormat": "lookups/s", "refId": "A" },
+        { "expr": "rate(kineplex_atlas_invalidations_total[1m])", "legendFormat": "invalidations/s", "refId": "B" }
+      ]
+    }
+  ]
+}
