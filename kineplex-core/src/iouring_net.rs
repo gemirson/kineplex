@@ -6,8 +6,8 @@
 //! - FT-019: Multishot receive operations
 //! - FT-020: Vectored write (scatter-gather)
 
-use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::os::fd::IntoRawFd;
 use std::sync::{Arc, Mutex};
 
 /// Default buffer size (64KB, suitable for large MTU)
@@ -309,7 +309,7 @@ impl NetworkDriver {
         &mut self,
         buffer_size: usize,
         buffer_count: usize,
-    ) -> std::result::Result<(), std::alloc::AllocError> {
+    ) -> std::io::Result<()> {
         let pool = Arc::new(BufferPool::new(buffer_size, buffer_count));
         self.buffer_pool = Some(pool.clone());
         self.receiver.configure(0, pool);

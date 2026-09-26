@@ -303,6 +303,9 @@ impl PacketReceiver {
                 self.buffer[30],
                 self.buffer[31],
             ]) as usize;
+            if payload_size == 0 {
+                break;
+            }
 
             let total_needed = self.header_size + payload_size;
 

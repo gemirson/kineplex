@@ -157,10 +157,10 @@ mod tests {
     #[test]
     fn test_different_headers_produce_different_bytes() {
         let mut buffer = HeaderBuffer::new();
-        let header1 = buffer.write_header(1, 100, 1, 0, 1024);
+        let header1 = buffer.write_header(1, 100, 1, 0, 1024).to_vec();
 
         buffer.reset();
-        let header2 = buffer.write_header(2, 100, 1, 0, 1024);
+        let header2 = buffer.write_header(2, 100, 1, 0, 1024).to_vec();
 
         assert_ne!(header1, header2);
     }

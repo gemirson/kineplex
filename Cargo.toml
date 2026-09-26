@@ -15,7 +15,7 @@ arrow = { version = "=51.0.0", features = ["ffi"] }
 arc-swap = "=1.7.1"
 chrono = "=0.4.34"
 criterion = "=0.5.1"
-axum = { version = "=0.7.9", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "=0.7.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
 base64 = "=0.22.1"
 uuid = { version = "=1.4.0", features = ["serde", "v4"] }
 bytes = "=1.12.1"
@@ -28,7 +28,7 @@ libc = "=0.2.189"
 parquet = { version = "=51.0.0", features = ["arrow", "async"] }
 petgraph = { version = "=0.6.5", default-features = false }
 pprof = { version = "=0.13.0", default-features = false, features = ["flamegraph"] }
-quiche = { version = "0.30.0", default-features = false }
+quiche = { version = "0.30.0", default-features = false, features = ["boringssl-boring-crate"] }
 rcgen = "=0.11.0"
 ring = "=0.17.5"
 rand = "=0.8.5"

@@ -78,6 +78,9 @@ fn geometry_lookup_and_interpolation_allocate_no_heap_memory() {
     );
     let path = HomotopyPath::new(vec![[0.0; 3]], vec![[1.0; 3]]).expect("path is valid");
     let mut position = [[0.0; 3]; 1];
+    // The first lookup initializes the process-wide metrics registry; exclude
+    // that one-time setup allocation from the hot-path measurement.
+    let _ = routes.lookup(4);
     ALLOCATION_COUNT.with(|count| count.set(0));
     TRACK_ALLOCATIONS.with(|enabled| enabled.set(true));
     for _ in 0..10_000 {

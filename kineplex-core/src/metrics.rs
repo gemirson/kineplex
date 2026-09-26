@@ -191,8 +191,7 @@ impl MetricsRegistry {
         let topology_nodes = self.topology_nodes.load(Ordering::Relaxed) as f64;
         let topology_edges = self.topology_edges.load(Ordering::Relaxed) as f64;
         let curvature_tensors = self.curvature_tensors.load(Ordering::Relaxed) as f64;
-        let riemann_curvature =
-            f64::from_bits(self.riemann_curvature_bits.load(Ordering::Relaxed));
+        let riemann_curvature = f64::from_bits(self.riemann_curvature_bits.load(Ordering::Relaxed));
         let geodesic_revision = self.geodesic_revision.load(Ordering::Relaxed) as f64;
         let geodesic_lookups = self.geodesic_lookups.load(Ordering::Relaxed) as f64;
         let atlas_invalidations = self.atlas_invalidations.load(Ordering::Relaxed) as f64;
@@ -216,6 +215,7 @@ impl MetricsRegistry {
             r#"{{"resourceMetrics":[{{"resource":{{"attributes":[]}},"scopeMetrics":[{{"scope":{{"name":"kineplex"}},"metrics":[{{"name":"kineplex_spikes_total","description":"Total emitted KinePlex spikes.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{spikes},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}},{{"name":"kineplex_arrow_bytes_total","description":"Arrow payload bytes emitted.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{arrow_bytes},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}},{{"name":"kineplex_wasm_execution_ms","description":"Wasm execution duration in milliseconds.","unit":"ms","histogram":{{"dataPoints":[{{"bucketCounts":[{wasm_bucket_points}],"sum":{wasm_sum_ms},"count":{wasm_count},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2}}}},{{"name":"kineplex_cqe_drops","description":"Dropped io_uring completion events.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{cqe_drops},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}},{{"name":"kineplex_topology_nodes","description":"Current known topology node count.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{topology_nodes},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_topology_edges","description":"Current known topology edge count.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{topology_edges},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_curvature_tensors","description":"Current curvature tensor count.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{curvature_tensors},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_riemann_curvature","description":"Current local Riemann curvature norm.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{riemann_curvature},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_geodesic_route_revision","description":"Active route snapshot revision.","unit":"1","gauge":{{"dataPoints":[{{"asDouble":{geodesic_revision},"startTimeUnixNano":"0","timeUnixNano":"0"}}]}}}},{{"name":"kineplex_geodesic_route_lookups_total","description":"Geodesic route lookup count.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{geodesic_lookups},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}},{{"name":"kineplex_atlas_invalidations_total","description":"Local charts invalidated by curvature.","unit":"1","sum":{{"dataPoints":[{{"asDouble":{atlas_invalidations},"startTimeUnixNano":"0","timeUnixNano":"0"}}],"aggregationTemporality":2,"isMonotonic":true}}}}]}}]}}]}}"#
         )
     }
+}
 
 static REGISTRY: OnceLock<MetricsRegistry> = OnceLock::new();
 

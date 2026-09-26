@@ -237,9 +237,7 @@ async fn prometheus_metrics() -> Response {
 }
 
 async fn otlp_metrics() -> Response {
-    let mut response = Response::new(Body::from(
-        kineplex_core::metrics::global().otlp_json(),
-    ));
+    let mut response = Response::new(Body::from(kineplex_core::metrics::global().otlp_json()));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
@@ -456,6 +454,9 @@ async fn allocate_graph(
         let first_candidate = stage_index % candidates.len();
         for offset in 0..candidates.len() {
             let candidate = &candidates[(first_candidate + offset) % candidates.len()];
+            if assigned.contains(candidate) {
+                continue;
+            }
             let target = control_addr(*candidate)?;
             let request = AllocationRequest {
                 allocation_id,
