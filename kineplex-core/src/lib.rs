@@ -1,5 +1,6 @@
 //! Core configuration and domain types for KinePlex.
 
+pub mod arrow_ffi;
 pub mod graph;
 pub mod observability;
 pub mod wasm;
