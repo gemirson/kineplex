@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use arrow::array::{Array, Float32Array, RecordBatch};
+use arrow::ipc::reader::StreamReader;
+use arrow::ipc::writer::StreamWriter;
 use dashmap::DashMap;
 use ring::digest::{digest, SHA256};
 use wasmtime::{
@@ -256,6 +258,96 @@ impl WasmRuntime {
             .map_err(WasmExecutionError::Trap)
     }
 
+    /// Executes the standard `kineplex_run(i32, i32) -> i32` Arrow IPC ABI.
+    ///
+    /// The guest must export `alloc_ffi(i32) -> i32`, `memory`, and
+    /// `kineplex_result_size() -> i32`. Input and output are Arrow IPC streams
+    /// copied through guest-owned linear memory. The second argument points to
+    /// an 8-byte descriptor containing ABI version `1` and the input byte size.
+    /// All memory offsets and lengths are checked before host reads or writes.
+    pub fn invoke_arrow(
+        &self,
+        wasm: &[u8],
+        input: &RecordBatch,
+        fuel: u64,
+    ) -> Result<RecordBatch, WasmExecutionError> {
+        let module = self
+            .cache
+            .get_or_compile(self.engine, wasm)
+            .map_err(WasmExecutionError::Compile)?;
+        let mut input_bytes = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut input_bytes, input.schema().as_ref())
+                .map_err(|error| WasmExecutionError::Abi(error.to_string()))?;
+            writer
+                .write(input)
+                .map_err(|error| WasmExecutionError::Abi(error.to_string()))?;
+            writer
+                .finish()
+                .map_err(|error| WasmExecutionError::Abi(error.to_string()))?;
+        }
+        let input_len = i32::try_from(input_bytes.len()).map_err(|_| {
+            WasmExecutionError::Abi("input IPC stream exceeds the Wasm ABI size limit".to_owned())
+        })?;
+        let mut store = self
+            .new_store(fuel, None)
+            .map_err(WasmExecutionError::Fuel)?;
+        let instance =
+            Instance::new(&mut store, &module, &[]).map_err(WasmExecutionError::Instantiate)?;
+        let memory = instance
+            .get_memory(&mut store, "memory")
+            .ok_or_else(|| WasmExecutionError::Abi("guest must export memory".to_owned()))?;
+        let allocator = instance
+            .get_typed_func::<i32, i32>(&mut store, "alloc_ffi")
+            .map_err(WasmExecutionError::Export)?;
+        let input_pointer = allocator
+            .call(&mut store, input_len)
+            .map_err(WasmExecutionError::Trap)?;
+        let mut descriptor = [0_u8; 8];
+        descriptor[..4].copy_from_slice(&1_u32.to_le_bytes());
+        descriptor[4..].copy_from_slice(&(input_bytes.len() as u32).to_le_bytes());
+        let descriptor_pointer = allocator
+            .call(&mut store, descriptor.len() as i32)
+            .map_err(WasmExecutionError::Trap)?;
+        write_guest_memory(&memory, &mut store, input_pointer, &input_bytes)?;
+        write_guest_memory(&memory, &mut store, descriptor_pointer, &descriptor)?;
+
+        let run = instance
+            .get_typed_func::<(i32, i32), i32>(&mut store, "kineplex_run")
+            .map_err(WasmExecutionError::Export)?;
+        let output_pointer = run
+            .call(&mut store, (input_pointer, descriptor_pointer))
+            .map_err(WasmExecutionError::Trap)?;
+        let size_function = instance
+            .get_typed_func::<(), i32>(&mut store, "kineplex_result_size")
+            .map_err(WasmExecutionError::Export)?;
+        let output_size = size_function
+            .call(&mut store, ())
+            .map_err(WasmExecutionError::Trap)?;
+        if output_size < 0 || output_size as usize > MAX_WASM_MEMORY_BYTES {
+            return Err(WasmExecutionError::Abi(
+                "guest returned an invalid Arrow IPC result size".to_owned(),
+            ));
+        }
+        let mut output_bytes = vec![0; output_size as usize];
+        read_guest_memory(&memory, &store, output_pointer, &mut output_bytes)?;
+        let mut reader = StreamReader::try_new(std::io::Cursor::new(output_bytes), None)
+            .map_err(|error| WasmExecutionError::Abi(error.to_string()))?;
+        let batch = reader
+            .next()
+            .transpose()
+            .map_err(|error| WasmExecutionError::Abi(error.to_string()))?
+            .ok_or_else(|| {
+                WasmExecutionError::Abi("guest returned no Arrow record batch".to_owned())
+            })?;
+        if reader.next().is_some() {
+            return Err(WasmExecutionError::Abi(
+                "guest must return exactly one Arrow record batch".to_owned(),
+            ));
+        }
+        Ok(batch)
+    }
+
     fn new_store(
         &self,
         fuel: u64,
@@ -283,6 +375,50 @@ pub struct WasmInstance {
     instance: Instance,
 }
 
+fn checked_guest_range(
+    memory: &wasmtime::Memory,
+    store: &Store<StoreState>,
+    pointer: i32,
+    length: usize,
+) -> Result<usize, WasmExecutionError> {
+    let start = usize::try_from(pointer).map_err(|_| {
+        WasmExecutionError::Abi("guest returned a negative memory offset".to_owned())
+    })?;
+    let end = start
+        .checked_add(length)
+        .ok_or_else(|| WasmExecutionError::Abi("guest memory range overflowed".to_owned()))?;
+    if end > memory.data_size(store) {
+        return Err(WasmExecutionError::Abi(
+            "guest memory range is out of bounds".to_owned(),
+        ));
+    }
+    Ok(start)
+}
+
+fn write_guest_memory(
+    memory: &wasmtime::Memory,
+    store: &mut Store<StoreState>,
+    pointer: i32,
+    bytes: &[u8],
+) -> Result<(), WasmExecutionError> {
+    let start = checked_guest_range(memory, store, pointer, bytes.len())?;
+    memory
+        .write(store, start, bytes)
+        .map_err(|error| WasmExecutionError::Abi(error.to_string()))
+}
+
+fn read_guest_memory(
+    memory: &wasmtime::Memory,
+    store: &Store<StoreState>,
+    pointer: i32,
+    bytes: &mut [u8],
+) -> Result<(), WasmExecutionError> {
+    let start = checked_guest_range(memory, store, pointer, bytes.len())?;
+    memory
+        .read(store, start, bytes)
+        .map_err(|error| WasmExecutionError::Abi(error.to_string()))
+}
+
 impl WasmInstance {
     /// Invokes an exported zero-argument, zero-result function.
     pub fn call(&mut self, export: &str) -> Result<(), WasmExecutionError> {
@@ -299,6 +435,7 @@ impl WasmInstance {
 /// Compilation, instantiation, export lookup, or guest trap failure.
 #[derive(Debug)]
 pub enum WasmExecutionError {
+    Abi(String),
     Fuel(wasmtime::Error),
     Compile(WasmModuleError),
     Instantiate(wasmtime::Error),
@@ -309,6 +446,7 @@ pub enum WasmExecutionError {
 impl Display for WasmExecutionError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Abi(error) => write!(formatter, "invalid Wasm Arrow ABI result: {error}"),
             Self::Fuel(error) => {
                 write!(formatter, "failed to set WebAssembly fuel budget: {error}")
             }
@@ -382,7 +520,11 @@ mod tests {
                     i32.const 0 i32.const 1 call $read_f32 f32.add))"#,
         )
         .expect("WAT parses");
-        let schema = Arc::new(Schema::new(vec![Field::new("score", DataType::Float32, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "score",
+            DataType::Float32,
+            false,
+        )]));
         let batch = Arc::new(
             RecordBatch::try_new(schema, vec![Arc::new(Float32Array::from(vec![4.0, 7.0]))])
                 .expect("batch is valid"),
@@ -392,5 +534,54 @@ mod tests {
             .call_with_arrow_f32(&wasm, "sum", batch, 100_000)
             .expect("guest call succeeds");
         assert_eq!(sum, 11.0);
+    }
+
+    #[test]
+    fn kineplex_run_round_trips_arrow_ipc_through_guest_memory() {
+        use std::sync::Arc;
+
+        use arrow::array::{Float32Array, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 2)
+                (global $heap (mut i32) (i32.const 8192))
+                (global $result_size (mut i32) (i32.const 0))
+                (func (export "alloc_ffi") (param $size i32) (result i32)
+                    (local $ptr i32)
+                    global.get $heap
+                    local.tee $ptr
+                    local.get $size
+                    i32.add
+                    global.set $heap
+                    local.get $ptr)
+                (func (export "kineplex_run") (param $input i32) (param $schema i32) (result i32)
+                    local.get $schema
+                    i32.load offset=4
+                    global.set $result_size
+                    local.get $input)
+                (func (export "kineplex_result_size") (result i32)
+                    global.get $result_size))"#,
+        )
+        .expect("WAT parses");
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "score",
+            DataType::Float32,
+            false,
+        )]));
+        let input = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Float32Array::from_iter_values(
+                (0..100).map(|value| value as f32),
+            ))],
+        )
+        .expect("batch is valid");
+        let output = WasmRuntime::new()
+            .expect("Wasmtime engine initializes")
+            .invoke_arrow(&wasm, &input, 1_000_000)
+            .expect("guest returns a valid Arrow stream");
+        assert_eq!(output.num_rows(), 100);
+        assert_eq!(output.schema(), input.schema());
     }
 }
