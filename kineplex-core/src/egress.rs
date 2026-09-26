@@ -78,6 +78,13 @@ impl OutboundSpike {
     pub fn into_packet(self) -> OwnedSynapsePacket {
         self.packet
     }
+
+    /// Transfers the sequence and owned network buffers to a pool-backed sender.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<u8>, Vec<u8>, u64) {
+        let (header, payload) = self.packet.into_parts();
+        (header, payload, self.sequence)
+    }
 }
 
 /// Error while serializing or framing an outgoing Arrow batch.
