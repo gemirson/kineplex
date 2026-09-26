@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use kineplex_core::geometry::{AtomicGeodesicTable, RouteEntry, RouteSnapshot};
+use kineplex_core::geometry::{
+    metric_norm_squared, metric_norm_squared_scalar, AtomicGeodesicTable, MetricSample,
+    MetricTensor, RouteEntry, RouteSnapshot,
+};
 
 fn precomputed_lookup(c: &mut Criterion) {
     let routes: HashMap<_, _> = (0..65_536)
@@ -25,5 +28,23 @@ fn precomputed_lookup(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, precomputed_lookup);
+fn metric_norm(c: &mut Criterion) {
+    let metric = MetricTensor::from_sample(
+        MetricSample {
+            latency_ms: 15.0,
+            queued_bytes: 4096.0,
+            cpu_percent: 30.0,
+        },
+        1,
+    );
+    let vector = [1.25, 2.5, 3.75];
+    c.bench_function("metric_norm_scalar", |bencher| {
+        bencher.iter(|| metric_norm_squared_scalar(black_box(&metric), black_box(vector)));
+    });
+    c.bench_function("metric_norm_avx2_dispatch", |bencher| {
+        bencher.iter(|| metric_norm_squared(black_box(&metric), black_box(vector)));
+    });
+}
+
+criterion_group!(benches, precomputed_lookup, metric_norm);
 criterion_main!(benches);

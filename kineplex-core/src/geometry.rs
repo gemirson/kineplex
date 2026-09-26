@@ -62,10 +62,44 @@ impl MetricTensor {
     /// Computes the metric squared norm without allocating.
     #[must_use]
     pub fn norm_squared(&self, vector: [f64; 3]) -> f64 {
-        vector[0] * vector[0] * self.components[0][0]
-            + vector[1] * vector[1] * self.components[1][1]
-            + vector[2] * vector[2] * self.components[2][2]
+        metric_norm_squared(self, vector)
     }
+}
+
+/// Scalar reference implementation used on CPUs without AVX2.
+#[must_use]
+pub fn metric_norm_squared_scalar(metric: &MetricTensor, vector: [f64; 3]) -> f64 {
+    vector[0] * vector[0] * metric.components[0][0]
+        + vector[1] * vector[1] * metric.components[1][1]
+        + vector[2] * vector[2] * metric.components[2][2]
+}
+
+/// Uses AVX2 when available and otherwise falls back to the scalar reference.
+#[must_use]
+pub fn metric_norm_squared(metric: &MetricTensor, vector: [f64; 3]) -> f64 {
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx2") {
+        // SAFETY: runtime feature detection guarantees AVX2 support on this CPU.
+        return unsafe { metric_norm_squared_avx2(metric, vector) };
+    }
+    metric_norm_squared_scalar(metric, vector)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn metric_norm_squared_avx2(metric: &MetricTensor, vector: [f64; 3]) -> f64 {
+    use std::arch::x86_64::{_mm256_mul_pd, _mm256_set_pd, _mm256_storeu_pd};
+    let values = _mm256_set_pd(0.0, vector[2], vector[1], vector[0]);
+    let weights = _mm256_set_pd(
+        0.0,
+        metric.components[2][2],
+        metric.components[1][1],
+        metric.components[0][0],
+    );
+    let weighted_squares = _mm256_mul_pd(_mm256_mul_pd(values, values), weights);
+    let mut lanes = [0.0_f64; 4];
+    _mm256_storeu_pd(lanes.as_mut_ptr(), weighted_squares);
+    lanes[0] + lanes[1] + lanes[2]
 }
 
 /// Non-blocking publisher connected to a single Control Plane metric worker.
@@ -392,8 +426,8 @@ impl LocalAtlas {
 #[cfg(test)]
 mod tests {
     use super::{
-        AtomicGeodesicTable, LocalAtlas, LocalChart, MetricSample, MetricTensor, MetricWorker,
-        RouteEntry, RouteSnapshot,
+        metric_norm_squared, metric_norm_squared_scalar, AtomicGeodesicTable, LocalAtlas,
+        LocalChart, MetricSample, MetricTensor, MetricWorker, RouteEntry, RouteSnapshot,
     };
     use std::time::Duration;
 
@@ -477,5 +511,22 @@ mod tests {
         });
         assert_eq!(table.revision(), 2);
         assert_eq!(table.lookup(7).map(|entry| entry.next_node), Some(99));
+    }
+
+    #[test]
+    fn simd_metric_norm_matches_the_scalar_reference() {
+        let metric = MetricTensor::from_sample(
+            MetricSample {
+                latency_ms: 12.0,
+                queued_bytes: 4096.0,
+                cpu_percent: 43.0,
+            },
+            1,
+        );
+        for point in [[1.0, 2.0, 3.0], [-3.5, 0.25, 8.0], [0.0; 3]] {
+            let scalar = metric_norm_squared_scalar(&metric, point);
+            let vectorized = metric_norm_squared(&metric, point);
+            assert!((scalar - vectorized).abs() < 1e-10);
+        }
     }
 }
