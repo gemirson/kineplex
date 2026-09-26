@@ -5,6 +5,8 @@ use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use dashmap::DashMap;
+
 /// Normalized local resource and transport measurements used by the metric model.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MetricSample {
@@ -234,9 +236,107 @@ impl std::fmt::Display for MetricWorkerError {
 
 impl std::error::Error for MetricWorkerError {}
 
+/// Identifier for one local coordinate chart.
+pub type ChartId = u64;
+
+/// Affine local coordinate chart with a compact overlap support.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LocalChart {
+    pub id: ChartId,
+    pub center: [f64; 3],
+    pub scale: [f64; 3],
+    pub overlap_radius: f64,
+}
+
+impl LocalChart {
+    #[must_use]
+    pub fn coordinates(&self, point: [f64; 3]) -> [f64; 3] {
+        [
+            (point[0] - self.center[0]) * self.scale[0],
+            (point[1] - self.center[1]) * self.scale[1],
+            (point[2] - self.center[2]) * self.scale[2],
+        ]
+    }
+
+    fn weight(&self, point: [f64; 3]) -> f64 {
+        if !self.overlap_radius.is_finite() || self.overlap_radius <= 0.0 {
+            return 0.0;
+        }
+        let distance_squared = (0..3)
+            .map(|axis| (point[axis] - self.center[axis]).powi(2))
+            .sum::<f64>();
+        let normalized = distance_squared / self.overlap_radius.powi(2);
+        if normalized >= 1.0 {
+            return 0.0;
+        }
+        (-1.0 / (1.0 - normalized)).exp()
+    }
+}
+
+/// Local atlas with O(1) chart lookup and smooth C-infinity overlap weights.
+#[derive(Default)]
+pub struct LocalAtlas {
+    charts: DashMap<ChartId, LocalChart>,
+}
+
+impl LocalAtlas {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&self, chart: LocalChart) -> Option<LocalChart> {
+        self.charts.insert(chart.id, chart)
+    }
+
+    pub fn remove(&self, id: ChartId) -> Option<LocalChart> {
+        self.charts.remove(&id).map(|(_, chart)| chart)
+    }
+
+    #[must_use]
+    pub fn get(&self, id: ChartId) -> Option<LocalChart> {
+        self.charts.get(&id).map(|chart| *chart)
+    }
+
+    /// Blends chart coordinates with a smooth partition of unity.
+    #[must_use]
+    pub fn coordinates(&self, point: [f64; 3]) -> Option<[f64; 3]> {
+        let mut weighted = [0.0_f64; 3];
+        let mut total_weight = 0.0;
+        for chart in self.charts.iter() {
+            let weight = chart.weight(point);
+            if weight == 0.0 {
+                continue;
+            }
+            let local = chart.coordinates(point);
+            for axis in 0..3 {
+                weighted[axis] += local[axis] * weight;
+            }
+            total_weight += weight;
+        }
+        if total_weight == 0.0 {
+            return None;
+        }
+        for value in &mut weighted {
+            *value /= total_weight;
+        }
+        Some(weighted)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.charts.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.charts.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MetricSample, MetricTensor, MetricWorker};
+    use super::{LocalAtlas, LocalChart, MetricSample, MetricTensor, MetricWorker};
     use std::time::Duration;
 
     #[test]
@@ -265,5 +365,28 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         assert!(worker.snapshot().revision <= 1);
         worker.shutdown();
+    }
+
+    #[test]
+    fn atlas_blends_overlapping_charts_and_ignores_points_outside_support() {
+        let atlas = LocalAtlas::new();
+        atlas.insert(LocalChart {
+            id: 1,
+            center: [0.0; 3],
+            scale: [1.0; 3],
+            overlap_radius: 2.0,
+        });
+        atlas.insert(LocalChart {
+            id: 2,
+            center: [1.0, 0.0, 0.0],
+            scale: [1.0; 3],
+            overlap_radius: 2.0,
+        });
+        let blended = atlas
+            .coordinates([0.5, 0.0, 0.0])
+            .expect("point belongs to both charts");
+        assert!((blended[0] - 0.0).abs() < 1.0);
+        assert!(atlas.coordinates([10.0, 10.0, 10.0]).is_none());
+        assert_eq!(atlas.len(), 2);
     }
 }
