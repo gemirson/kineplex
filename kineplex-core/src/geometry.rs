@@ -422,6 +422,52 @@ impl CongestionMetricAdapter {
     }
 }
 
+/// Resource load advertised by one mesh node.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NodeLoadSample {
+    pub cpu_percent: u8,
+    pub available_arrow_memory_mb: u32,
+}
+
+/// Adaptive next-hop chooser that repels traffic from overloaded nodes.
+#[derive(Default)]
+pub struct AdaptiveRoutePlanner {
+    node_loads: DashMap<u64, NodeLoadSample>,
+}
+
+impl AdaptiveRoutePlanner {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn update_load(&self, node: u64, sample: NodeLoadSample) {
+        self.node_loads.insert(node, sample);
+    }
+
+    /// Selects the lowest-resistance candidate below the default 90% CPU threshold.
+    #[must_use]
+    pub fn select_next_hop(
+        &self,
+        candidates: &[(RouteKey, RouteEntry)],
+    ) -> Option<(RouteKey, RouteEntry)> {
+        candidates
+            .iter()
+            .filter(|(_, route)| {
+                self.node_loads
+                    .get(&route.next_node)
+                    .map_or(true, |sample| sample.cpu_percent < 90)
+            })
+            .min_by(|left, right| left.1.resistance.total_cmp(&right.1.resistance))
+            .copied()
+    }
+
+    /// Drops load state for nodes that left the active mesh.
+    pub fn remove_node(&self, node: u64) -> Option<NodeLoadSample> {
+        self.node_loads.remove(&node).map(|(_, sample)| sample)
+    }
+}
+
 impl LocalAtlas {
     #[must_use]
     pub fn new() -> Self {
@@ -612,10 +658,10 @@ fn add_scaled(state: GeodesicState, derivative: GeodesicState, scale: f64) -> Ge
 #[cfg(test)]
 mod tests {
     use super::{
-        metric_norm_squared, metric_norm_squared_scalar, AtomicGeodesicTable, ChristoffelSymbols,
-        CongestionMetricAdapter, CurvatureMonitor, GeodesicIntegrator, GeodesicState, LocalAtlas,
-        LocalChart, MetricSample, MetricTensor, MetricWorker, QuicTransportFeedback, RouteEntry,
-        RouteSnapshot,
+        metric_norm_squared, metric_norm_squared_scalar, AdaptiveRoutePlanner, AtomicGeodesicTable,
+        ChristoffelSymbols, CongestionMetricAdapter, CurvatureMonitor, GeodesicIntegrator,
+        GeodesicState, LocalAtlas, LocalChart, MetricSample, MetricTensor, MetricWorker,
+        NodeLoadSample, QuicTransportFeedback, RouteEntry, RouteSnapshot,
     };
     use std::time::Duration;
 
@@ -780,5 +826,44 @@ mod tests {
             }
         ));
         assert!(table.lookup(1).expect("route remains available").resistance > 1.0);
+    }
+
+    #[test]
+    fn adaptive_planner_avoids_nodes_at_ninety_percent_cpu() {
+        let planner = AdaptiveRoutePlanner::new();
+        planner.update_load(
+            1,
+            NodeLoadSample {
+                cpu_percent: 95,
+                available_arrow_memory_mb: 400,
+            },
+        );
+        planner.update_load(
+            2,
+            NodeLoadSample {
+                cpu_percent: 40,
+                available_arrow_memory_mb: 300,
+            },
+        );
+        let candidates = [
+            (
+                10,
+                RouteEntry {
+                    next_node: 1,
+                    resistance: 0.1,
+                },
+            ),
+            (
+                11,
+                RouteEntry {
+                    next_node: 2,
+                    resistance: 1.0,
+                },
+            ),
+        ];
+        let selected = planner
+            .select_next_hop(&candidates)
+            .expect("healthy route remains");
+        assert_eq!(selected.1.next_node, 2);
     }
 }
