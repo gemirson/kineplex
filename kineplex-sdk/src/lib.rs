@@ -5,10 +5,12 @@ extern crate self as kineplex_sdk;
 pub use kineplex_sdk_macros::synapse;
 
 pub mod arrow;
+pub mod graph;
 
 pub mod prelude {
-    pub use crate::synapse;
     pub use crate::arrow::{KineColumnExt, KineRecordBatchBuilder};
+    pub use crate::graph::{KineGraph, NativeOperator};
+    pub use crate::synapse;
     pub use arrow::array::RecordBatch;
 }
 
