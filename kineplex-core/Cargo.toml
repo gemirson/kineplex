@@ -21,8 +21,13 @@ tracing-subscriber.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
-wat = "=1.0.85"
 serde_json.workspace = true
+wat = "=1.0.85"
+criterion.workspace = true
+
+[[bench]]
+name = "filter_f32"
+harness = false
 
 [lints]
 workspace = true
