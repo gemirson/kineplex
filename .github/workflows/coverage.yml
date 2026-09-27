@@ -1,5 +1,4 @@
-# CI/CD Pipeline de Cobertura de Testes
-# Gera relatório de cobertura e verifica threshold mínimo de 95%
+# CI de cobertura executável com threshold de 95%.
 
 name: Test Coverage
 
@@ -9,41 +8,51 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ==========================================
-  # JOB 1: Gerar dados de cobertura
-  # ==========================================
   coverage:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Rust
+      - name: Setup Rust with coverage tools
         uses: dtolnay/rust-action@stable
         with:
+          toolchain: stable
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Generate coverage report
+      - name: Run tests and enforce coverage gates
         run: |
-          cargo llvm-cov --workspace --lcov --output-path lcov.info
-          cargo llvm-cov --workspace --text-summary | tee coverage-summary.txt
-          cargo llvm-cov --workspace --html --output-dir coverage-html
+          set -o pipefail
+          cargo llvm-cov --workspace --summary-only \
+            --fail-under-lines 95 \
+            --fail-under-functions 95 \
+            --fail-under-regions 95 \
+            | tee coverage-summary.txt
 
-      - name: Upload coverage report
+      - name: Generate LCOV report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - name: Generate HTML report
+        run: cargo llvm-cov --workspace --html --output-dir coverage-html
+
+      - name: Upload coverage summary and LCOV
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: |
-            lcov.info
             coverage-summary.txt
+            lcov.info
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload HTML report
@@ -51,99 +60,13 @@ jobs:
         with:
           name: coverage-html
           path: coverage-html
+          if-no-files-found: error
           retention-days: 7
 
-  # ==========================================
-  # JOB 2: Verificar threshold de cobertura
-  # ==========================================
-  check-coverage:
-    runs-on: ubuntu-latest
-    needs: coverage
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-action@stable
-        with:
-          components: llvm-tools-preview
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Check coverage threshold
-        id: check
-        run: |
-          # Run with JSON output to parse
-          cargo llvm-cov --workspace --json > coverage.json 2>&1 || true
-          
-          # Extract total coverage percentage
-          TOTAL=$(cargo llvm-cov --workspace --json 2>/dev/null | grep '"id":"[^"]*","instrumentation_kind":"Rust","name":"[^"]*","functions":{"hit":.*,"total":.*},"lines":{"hit":.*,"total":.*},"regions":{"hit":.*,"total":.*}' | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for entry in data:
-    if entry.get('type') == 'source-file' or (entry.get('id') and entry.get('name') == 'Totals'):
-        continue
-        print(entry)
-if 'Totals' in str(data):
-    print('Found totals')
-" || echo "0")
-          
-          # Simple text parsing approach
-          OUTPUT=$(cargo llvm-cov --workspace 2>&1 | grep -E "TOTAL.*[0-9]+\.[0-9]+%" || echo "0%")
-          
-          # Extract percentage
-          PERCENT=$(echo "$OUTPUT" | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%')
-          
-          if [ -z "$PERCENT" ]; then
-            PERCENT=0
-          fi
-          
-          echo "Coverage: ${PERCENT}%"
-          echo "percent=$PERCENT" >> $GITHUB_OUTPUT
-          
-          # Check if meets minimum (95%)
-          if (( $(echo "$PERCENT >= 95" | bc -l) )); then
-            echo "✅ Coverage meets minimum threshold (95%)"
-            echo "meets_threshold=true" >> $GITHUB_OUTPUT
-            exit 0
-          else
-            echo "❌ Coverage below minimum threshold (95%)"
-            echo "meets_threshold=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-      - name: Display coverage badge
-        if: steps.check.outputs.meets_threshold == 'true'
-        run: |
-          echo "## ✅ Test Coverage: ${{ steps.check.outputs.percent }}%"
-          echo ""
-          echo "| Metric | Value |"
-          echo "|--------|-------|"
-          echo "| Coverage | ${{ steps.check.outputs.percent }}% |"
-          echo "| Threshold | 95% |"
-          echo "| Status | ✅ PASS |"
-
-      - name: Fail if below threshold
-        if: steps.check.outputs.meets_threshold == 'false'
-        run: |
-          echo "## ❌ Test Coverage Below Threshold"
-          echo ""
-          echo "| Metric | Value | Required |"
-          echo "|--------|-------|----------|"
-          echo "| Coverage | ${{ steps.check.outputs.percent }}% | 95% |"
-          echo "| Status | ❌ FAIL | ✅ PASS |"
-          exit 1
-
-  # ==========================================
-  # JOB 3: Relatório detalhado por crate
-  # ==========================================
   coverage-per-crate:
-    runs-on: ubuntu-latest
     needs: coverage
-    
     strategy:
+      fail-fast: false
       matrix:
         crate:
           - kineplex-core
@@ -151,26 +74,28 @@ if 'Totals' in str(data):
           - kineplex-node
           - kineplex-sdk
           - kineplex-sdk-macros
-    
+          - kineplex-cli
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Rust
+      - name: Setup Rust with coverage tools
         uses: dtolnay/rust-action@stable
         with:
+          toolchain: stable
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Coverage for ${{ matrix.crate }}
-        run: |
-          cargo llvm-cov -p ${{ matrix.crate }} --text-summary | tee crate-coverage-${{ matrix.crate }}.txt
+      - name: Generate crate coverage summary
+        run: cargo llvm-cov -p ${{ matrix.crate }} --summary-only | tee crate-coverage.txt
 
       - name: Upload crate coverage
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.crate }}
-          path: crate-coverage-${{ matrix.crate }}.txt
+          path: crate-coverage.txt
+          if-no-files-found: error
           retention-days: 7

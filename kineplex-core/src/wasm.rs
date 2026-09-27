@@ -6,11 +6,9 @@
 //! - Caching of compiled modules
 
 use crate::{Result, CoreError};
-use std::sync::Arc;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use wasmtime::{Engine, Module, Instance, Store, Memory, Config, MemoryType};
-use wasmtime::MemoryCreator;
+use wasmtime::{Engine, Module, Store, Config};
 
 /// Wasm runtime configuration
 #[derive(Debug, Clone)]
@@ -135,15 +133,19 @@ impl WasmRuntime {
         
         // Enable SIMD if configured
         if config.enable_simd {
-            wasm_config.simd(true);
+            wasm_config.wasm_simd(true);
         }
         
+        wasm_config.consume_fuel(true);
+
         // Enable caching if configured
         if config.enable_cache {
-            wasm_config.cache_config_load_default()?;
+            wasm_config.cache_config_load_default()
+                .map_err(|e| CoreError::WasmError(e.to_string()))?;
         }
         
-        let engine = Engine::new(&wasm_config);
+        let engine = Engine::new(&wasm_config)
+            .map_err(|e| CoreError::WasmError(e.to_string()))?;
         
         Ok(Self {
             engine,
@@ -170,14 +172,14 @@ impl WasmRuntime {
     /// Execute a compiled module
     pub fn execute(&self, module_id: &str, input: &[u8]) -> Result<Vec<u8>> {
         let cache = self.module_cache.read();
-        let module = cache.get(module_id)
+        let _module = cache.get(module_id)
             .ok_or_else(|| CoreError::WasmError(format!("Module {} not found", module_id)))?;
         
         // Create store with fuel limiting
-        let mut store = Store::new(&self.engine);
+        let mut store = Store::new(&self.engine, ());
         
         // Set fuel limit
-        store.add_fuel(self.config.max_fuel)
+        store.set_fuel(self.config.max_fuel)
             .map_err(|e| CoreError::WasmError(e.to_string()))?;
         
         // Note: In a full implementation, we would:
@@ -253,5 +255,55 @@ mod tests {
     fn test_wasm_runtime_creation() {
         let runtime = WasmRuntime::new(WasmConfig::default());
         assert!(runtime.is_ok());
+    }
+}
+
+
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn tenant_quota_errors_and_limits() {
+        let manager = TenantResourceManager::default();
+        assert!(manager.can_execute("missing").is_err());
+        manager.register_tenant(TenantQuota {
+            tenant_id: "tenant".to_string(),
+            max_concurrent: 1,
+            max_memory_mb: 10,
+            max_fuel: 20,
+            rate_limit_per_minute: 2,
+        });
+        assert_eq!(manager.get_quota("tenant").unwrap().max_memory_mb, 10);
+        manager.record_execution_start("tenant").unwrap();
+        assert!(!manager.can_execute("tenant").unwrap());
+        manager.record_execution_end("tenant").unwrap();
+        manager.record_execution_end("tenant").unwrap();
+        assert!(manager.can_execute("tenant").unwrap());
+        assert!(manager.get_quota("none").is_none());
+    }
+
+    #[test]
+    fn runtime_compiles_caches_and_executes_module() {
+        let runtime = WasmRuntime::new(WasmConfig {
+            enable_cache: false,
+            ..WasmConfig::default()
+        }).unwrap();
+        let module = b"\0asm\x01\0\0\0";
+        runtime.compile_module("empty", module).unwrap();
+        runtime.compile_module("empty", module).unwrap();
+        assert_eq!(runtime.cache_size(), 1);
+        assert_eq!(runtime.execute("empty", b"input").unwrap(), b"input");
+        assert!(runtime.execute("missing", b"").is_err());
+        assert!(runtime.compile_module("bad", b"invalid").is_err());
+    }
+
+    #[test]
+    fn execution_context_contains_identity_and_input() {
+        let context = WasmExecutionContext::new("tenant", vec![1, 2], WasmConfig::default());
+        assert_eq!(context.tenant_id, "tenant");
+        assert_eq!(context.input, vec![1, 2]);
+        assert!(!context.execution_id.is_empty());
     }
 }

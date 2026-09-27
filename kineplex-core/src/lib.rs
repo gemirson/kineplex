@@ -17,8 +17,6 @@ pub use error::{CoreError, Result};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use std::sync::Arc;
-use parking_lot::RwLock;
 
 /// Unique identifier for a graph execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -159,7 +157,7 @@ impl Graph {
 }
 
 /// Configuration for graph execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GraphConfig {
     /// Maximum memory in MB
     pub max_memory_mb: u64,

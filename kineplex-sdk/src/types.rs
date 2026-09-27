@@ -1,6 +1,5 @@
 //! Types for the SDK
 
-use kineplex_core::GraphId;
 use serde::{Deserialize, Serialize};
 
 /// Request to submit a graph

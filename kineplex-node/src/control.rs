@@ -5,10 +5,10 @@
 //! - Graph allocation
 //! - Execution coordination
 
-use crate::{ClusterManager, NodeId, ClusterNode, NodeState, NodeCapacity};
+use crate::{ClusterManager, NodeId, NodeState};
 use kineplex_core::{
     Result, CoreError, GraphId, Graph, GraphStatus, GraphConfig, 
-    create_distributed_graph, ExecutionResult, Stage,
+    create_distributed_graph,
 };
 use crate::execution::PipelineExecutor;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub struct SubmissionRequest {
 }
 
 /// Configuration for submission
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SubmissionConfig {
     /// Maximum memory in MB
     pub max_memory_mb: Option<u64>,
@@ -84,7 +84,7 @@ pub struct AllocationResult {
 /// Node control service
 pub struct NodeControl {
     cluster: Arc<ClusterManager>,
-    executor: Arc<PipelineExecutor>,
+    _executor: Arc<PipelineExecutor>,
     graphs: RwLock<HashMap<GraphId, Graph>>,
     submissions: RwLock<HashMap<String, SubmissionRequest>>,
     auth_enabled: RwLock<bool>,
@@ -105,7 +105,7 @@ impl NodeControl {
     pub fn new(cluster: Arc<ClusterManager>, executor: Arc<PipelineExecutor>) -> Self {
         Self {
             cluster,
-            executor,
+            _executor: executor,
             graphs: RwLock::new(HashMap::new()),
             submissions: RwLock::new(HashMap::new()),
             auth_enabled: RwLock::new(false),
@@ -128,10 +128,8 @@ impl NodeControl {
     pub fn validate_submission(&self, request: &SubmissionRequest) -> Result<()> {
         // Check authentication if enabled
         let auth_enabled = *self.auth_enabled.read();
-        if auth_enabled {
-            if request.credentials.is_none() {
-                return Err(CoreError::AuthenticationRequired);
-            }
+        if auth_enabled && request.credentials.is_none() {
+            return Err(CoreError::AuthenticationRequired);
         }
         
         // Check tenant quota
@@ -169,11 +167,10 @@ impl NodeControl {
         // Store graph
         self.graphs.write().insert(graph_id.clone(), graph);
         
-        // Store submission
+        let required_nodes = request.config.required_nodes.unwrap_or(1);
+
+        // Store submission after extracting all request fields used below.
         self.submissions.write().insert(request.submission_id.clone(), request);
-        
-        // Allocate nodes
-        let required_nodes = request.config.required_nodes.unwrap_or(1) as u32;
         let allocated = self.cluster.allocate_nodes(required_nodes);
         
         // Update node states
@@ -252,7 +249,7 @@ mod tests {
     #[test]
     fn test_submission() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         let request = SubmissionRequest {
@@ -375,16 +372,16 @@ mod tests {
     #[test]
     fn test_node_control_creation() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
-        assert!(!control.graphs.read().is_empty() || true); // Always passes
+        assert!(control.graphs.read().is_empty());
     }
     
     #[test]
     fn test_node_control_set_auth_enabled() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         control.set_auth_enabled(true);
@@ -397,7 +394,7 @@ mod tests {
     #[test]
     fn test_node_control_register_tenant() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         let quota = TenantQuotaInfo {
@@ -417,7 +414,7 @@ mod tests {
     #[test]
     fn test_node_control_submit_with_auth_disabled() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         // Auth disabled - should work without credentials
@@ -436,7 +433,7 @@ mod tests {
     #[test]
     fn test_node_control_submit_with_auth_enabled_requires_credentials() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         control.set_auth_enabled(true);
@@ -456,7 +453,7 @@ mod tests {
     #[test]
     fn test_node_control_submit_with_credentials_succeeds() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         control.set_auth_enabled(true);
@@ -480,7 +477,7 @@ mod tests {
     #[test]
     fn test_node_control_get_graph_status() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         // Submit a graph first
@@ -501,7 +498,7 @@ mod tests {
     #[test]
     fn test_node_control_get_nonexistent_graph_status() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         let fake_id = GraphId::new();
@@ -513,7 +510,7 @@ mod tests {
     #[test]
     fn test_node_control_cancel_running_graph() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         // Submit a graph first (starts in Pending state)
@@ -535,7 +532,7 @@ mod tests {
     #[test]
     fn test_node_control_handle_node_rejoin() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster.clone(), executor);
         
         let node_id = NodeId::new();
@@ -551,7 +548,7 @@ mod tests {
     #[test]
     fn test_node_control_handle_node_failure() {
         let cluster = Arc::new(ClusterManager::new());
-        let executor = Arc::new(PipelineExecutor::new());
+        let executor = Arc::new(PipelineExecutor::new(cluster.clone()));
         let control = NodeControl::new(cluster, executor);
         
         // First submit a graph

@@ -33,10 +33,16 @@ impl Default for NetNodeId {
 }
 
 /// Network address
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkAddress {
     pub host: String,
     pub port: u16,
+}
+
+impl std::fmt::Display for NetworkAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.host, self.port)
+    }
 }
 
 impl NetworkAddress {
@@ -45,10 +51,6 @@ impl NetworkAddress {
             host: host.into(),
             port,
         }
-    }
-    
-    pub fn to_string(&self) -> String {
-        format!("{}:{}", self.host, self.port)
     }
 }
 

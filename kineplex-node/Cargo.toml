@@ -18,7 +18,7 @@ tracing-subscriber.workspace = true
 
 # Additional dependencies
 uuid = { version = "1.6", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+chrono.workspace = true
 parking_lot = "0.12"
  tonic = "0.10"
  prost = "0.12"

@@ -7,7 +7,7 @@
 
 use crate::{NetNodeId, NetworkAddress};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
 use parking_lot::RwLock;
 
 /// Routing table entry
@@ -44,7 +44,7 @@ impl Router {
             address,
         };
         
-        self.routes.write().insert(node_id, route);
+        self.routes.write().insert(node_id.clone(), route);
         self.direct_peers.write().push(node_id);
     }
     
@@ -123,5 +123,32 @@ mod tests {
         let route = router.get_route(&peer_id);
         assert!(route.is_some());
         assert_eq!(route.unwrap().distance, 1);
+    }
+}
+
+
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn router_handles_direct_and_multihop_routes() {
+        let self_node = NetNodeId::new();
+        let router = Router::new(self_node.clone());
+        let peer = NetNodeId::new();
+        let target = NetNodeId::new();
+        let address = NetworkAddress::new("localhost", 9000);
+        router.add_peer(peer.clone(), address.clone());
+        assert_eq!(router.get_peers(), vec![peer.clone()]);
+        assert_eq!(router.calculate_route(&peer), Some(peer.clone()));
+        assert_eq!(router.get_address(&peer).unwrap().to_string(), "localhost:9000");
+        router.add_route(target.clone(), peer.clone(), 2, address.clone());
+        assert_eq!(router.calculate_route(&target), Some(peer));
+        assert_eq!(router.get_route(&target).unwrap().distance, 2);
+        assert!(router.get_route(&NetNodeId::new()).is_none());
+        assert!(router.calculate_route(&NetNodeId::new()).is_none());
+        router.update_routes(vec![(self_node.clone(), address.clone()), (NetNodeId::new(), address)]);
+        assert_eq!(router.get_peers().len(), 1);
     }
 }
