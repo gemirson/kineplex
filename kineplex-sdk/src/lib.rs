@@ -4,10 +4,10 @@ pub mod client;
 pub mod types;
 
 pub use client::KinePlexClient;
-pub use types::{GraphSubmitRequest, GraphStatusResponse};
+pub use types::{GraphConfigDto, GraphSubmitRequest, GraphStatusResponse};
 
-use kineplex_core::{GraphId, GraphStatus};
-use serde::{Deserialize, Serialize};
+pub use kineplex_core::GraphId;
+
 
 /// SDK version
 pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");

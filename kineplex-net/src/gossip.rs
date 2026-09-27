@@ -210,7 +210,7 @@ mod tests {
         protocol.register_node(node.clone());
         
         let alive = protocol.get_alive_members();
-        assert!(alive.len() >= 1);
+        assert!(!alive.is_empty());
     }
     
     #[test]
@@ -347,7 +347,7 @@ mod tests {
         protocol.handle_rejoin(node.clone());
         
         let alive = protocol.get_alive_members();
-        assert!(alive.len() >= 1);
+        assert!(!alive.is_empty());
     }
     
     #[test]
@@ -401,7 +401,7 @@ mod tests {
         let events = protocol.get_events();
         
         // Event should be consumed after getting
-        assert!(events.len() >= 1);
+        assert!(!events.is_empty());
     }
     
     #[test]

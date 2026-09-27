@@ -11,14 +11,14 @@ pub mod execution;
 pub use control::{NodeControl, SubmissionRequest, AllocationResult};
 pub use execution::PipelineExecutor;
 
-use kineplex_core::{GraphId, Graph, GraphStatus, Result, create_distributed_graph, GraphConfig};
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use kineplex_core::GraphId;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Node identifier
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub String);
 
 impl NodeId {
@@ -160,7 +160,7 @@ impl Default for ClusterManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kineplex_core::{GraphId, GraphStatus};
+    use kineplex_core::GraphId;
     
     // NodeId tests
     #[test]
@@ -274,7 +274,7 @@ mod tests {
         // Try to allocate more nodes than available
         let allocated = manager.allocate_nodes(100);
         // Should allocate what is available
-        assert!(allocated.len() >= 1);
+        assert!(!allocated.is_empty());
     }
     
     #[test]
@@ -286,9 +286,11 @@ mod tests {
         manager.update_node_state(&node_id, NodeState::Executing(GraphId::new()));
         
         // Verify state changed
-        let nodes = manager.nodes.read();
-        let node = nodes.get(&node_id).unwrap();
-        assert!(matches!(node.state, NodeState::Executing(_)));
+        {
+            let nodes = manager.nodes.read();
+            let node = nodes.get(&node_id).unwrap();
+            assert!(matches!(node.state, NodeState::Executing(_)));
+        }
         
         // Reset to ready
         manager.update_node_state(&node_id, NodeState::Ready);

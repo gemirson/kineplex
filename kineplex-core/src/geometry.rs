@@ -8,11 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-/// ==========================================
-/// FT-089: Controlador de Passo Adaptativo PID
-/// ==========================================
+// ==========================================
+// FT-089: Controlador de Passo Adaptativo PID
+// ==========================================
 
 /// Controlador PID para passo adaptativo epsilon
 #[derive(Debug, Clone)]
@@ -164,9 +164,9 @@ impl EpsilonHistory {
     }
 }
 
-/// ==========================================
-/// FT-090: Normalização de Volume do Tensor Métrico
-/// ==========================================
+// ==========================================
+// FT-090: Normalização de Volume do Tensor Métrico
+// ==========================================
 
 /// Erros de normalização
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,11 +249,11 @@ impl MetricTensorNormalizer {
         }
         
         let scale_factor = self.target_volume / current_volume;
-        let mut max_weight = 0.0;
+        let mut max_weight: f64 = 0.0;
         
         for weight in weights.iter_mut() {
             *weight *= scale_factor;
-            *weight = weight.clamp(0.0, u32::MAX as f64);
+            *weight = weight.clamp(0.0, self.max_tensor_value as f64);
             max_weight = max_weight.max(*weight);
         }
         
@@ -278,9 +278,9 @@ impl MetricTensorNormalizer {
     }
 }
 
-/// ==========================================
-/// FT-091: Descoberta de 2-Simplexos (Faces Triangulares)
-/// ==========================================
+// ==========================================
+// FT-091: Descoberta de 2-Simplexos (Faces Triangulares)
+// ==========================================
 
 /// Representa um nó na rede
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -302,8 +302,8 @@ impl Simplex2Discoverer {
     
     /// Adiciona uma aresta
     pub fn add_edge(&mut self, a: GeoNodeId, b: GeoNodeId) {
-        self.adjacency.entry(a.clone()).or_insert_with(HashSet::new).insert(b.clone());
-        self.adjacency.entry(b).or_insert_with(HashSet::new).insert(a);
+        self.adjacency.entry(a.clone()).or_default().insert(b.clone());
+        self.adjacency.entry(b).or_default().insert(a);
     }
     
     /// Remove uma aresta
@@ -413,9 +413,9 @@ impl Default for Simplex2Discoverer {
     }
 }
 
-/// ==========================================
-/// FT-092: Fase de Aquecimento Geométrico
-/// ==========================================
+// ==========================================
+// FT-092: Fase de Aquecimento Geométrico
+// ==========================================
 
 /// Spike sintético para warm-up
 #[derive(Debug, Clone)]
@@ -515,7 +515,7 @@ impl GeometricWarmup {
     /// Executa o warm-up geométrico
     pub async fn warmup<T: MetricTensorSystem + Send + Sync>(
         &mut self,
-        metric_system: &T,
+        metric_system: &mut T,
     ) -> Result<WarmupResult, WarmupError> {
         self.warmup_start_time = Some(Instant::now());
         self.metric_history.clear();
@@ -612,9 +612,9 @@ mod tests {
         let mut controller = AdaptiveStepController::new(0.5);
         
         // Simular mudança de curvatura
-        let epsilon1 = controller.compute(0.1);  // Curvatura aumentando
-        let epsilon2 = controller.compute(0.0);  // Estável
-        let epsilon3 = controller.compute(-0.1); // Diminuindo
+        let _epsilon1 = controller.compute(0.1);  // Curvatura aumentando
+        let _epsilon2 = controller.compute(0.0);  // Estável
+        let _epsilon3 = controller.compute(-0.1); // Diminuindo
         
         // Deve ajustar o epsilon
         assert!(controller.epsilon() > 0.0);
@@ -756,5 +756,129 @@ mod tests {
             .with_timeout(3000);
         
         assert!(!warmup.is_operational());
+    }
+}
+
+
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn controller_configuration_stability_and_reset() {
+        let mut controller = AdaptiveStepController::new(0.5)
+            .with_pid_gains(0.1, 0.01, 0.2)
+            .with_limits(0.1, 0.9);
+        assert!(controller.is_stable());
+        controller.compute(0.1);
+        assert!(!controller.is_stable());
+        controller.reset();
+        assert!(controller.is_stable());
+        assert!(controller.epsilon() < 0.5);
+        controller.compute(-100.0);
+        assert_eq!(controller.epsilon(), 0.9);
+        controller.compute(100.0);
+        assert_eq!(controller.epsilon(), 0.1);
+    }
+
+    #[test]
+    fn epsilon_history_covers_empty_small_and_bounded_history() {
+        let mut empty = EpsilonHistory::new(2);
+        assert_eq!(empty.variance(), 0.0);
+        assert!(!empty.has_oscillation());
+        empty.push(1.0);
+        assert_eq!(empty.variance(), 0.0);
+        empty.push(2.0);
+        empty.push(3.0);
+        assert_eq!(empty.samples.len(), 2);
+    }
+
+    #[test]
+    fn normalizer_covers_overflow_underflow_bounds_and_zero_clamp() {
+        let overflow = MetricTensorNormalizer::new((u32::MAX as f64) * 2.0);
+        let mut values = vec![1.0];
+        assert!(matches!(overflow.normalize(&mut values), Err(NormalizationError::Overflow(_))));
+        let underflow = MetricTensorNormalizer::new(f64::MIN_POSITIVE);
+        let mut tiny = vec![1.0];
+        assert!(matches!(underflow.normalize(&mut tiny), Err(NormalizationError::Underflow(_))));
+        let normalizer = MetricTensorNormalizer::new(1.0);
+        let mut zero = vec![0.0];
+        assert_eq!(normalizer.normalize_with_clamp(&mut zero), 0.0);
+        assert!(normalizer.is_within_bounds(&[0.0, 1.0]));
+        assert!(!normalizer.is_within_bounds(&[-1.0]));
+        assert!(matches!(NormalizationError::ZeroVolume.to_string(), _));
+        assert!(NormalizationError::Overflow(2.0).to_string().contains("Overflow"));
+        assert!(NormalizationError::Underflow(0.0).to_string().contains("Underflow"));
+    }
+
+    #[test]
+    fn simplex_empty_remove_and_non_triangle_paths() {
+        let mut discoverer = Simplex2Discoverer::default();
+        assert!(discoverer.find_triangles().is_empty());
+        assert_eq!(discoverer.count_edges(), 0);
+        assert_eq!(discoverer.betti_number(), 0);
+        let a = GeoNodeId("a".to_string());
+        let b = GeoNodeId("b".to_string());
+        let c = GeoNodeId("c".to_string());
+        discoverer.add_edge(a.clone(), b.clone());
+        discoverer.add_edge(b.clone(), c.clone());
+        assert!(discoverer.find_triangles().is_empty());
+        discoverer.remove_edge(&a, &c);
+        discoverer.remove_edge(&a, &b);
+        assert_eq!(discoverer.count_edges(), 1);
+    }
+
+    #[test]
+    fn synthetic_spike_and_warmup_errors_have_display() {
+        let spike = SyntheticSpike::new(4);
+        assert_eq!(spike.source.0, "node-1");
+        assert_eq!(spike.target.0, "node-2");
+        assert!(WarmupError::Timeout(10).to_string().contains("10"));
+        assert!(WarmupError::ConvergenceFailed.to_string().contains("convergência"));
+    }
+
+    struct MockMetricSystem {
+        variance: f64,
+        calls: u32,
+        delay_ms: u64,
+        fail: bool,
+    }
+
+    impl MetricTensorSystem for MockMetricSystem {
+        async fn process_spike(&mut self, _spike: SyntheticSpike) -> Result<(), WarmupError> {
+            if self.fail {
+                return Err(WarmupError::ConvergenceFailed);
+            }
+            self.calls += 1;
+            if self.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            }
+            Ok(())
+        }
+        fn metric_variance(&self) -> f64 { self.variance }
+        fn metric_mean(&self) -> f64 { 1.0 }
+    }
+
+    #[tokio::test]
+    async fn warmup_converges_and_reports_operational_state() {
+        let mut system = MockMetricSystem { variance: 0.0, calls: 0, delay_ms: 0, fail: false };
+        let mut warmup = GeometricWarmup::new().with_spikes(20).with_threshold(0.01);
+        assert_eq!(warmup.elapsed_time_ms(), 0);
+        let result = warmup.warmup(&mut system).await.unwrap();
+        assert!(result.converged);
+        assert_eq!(result.spikes_used, 10);
+        assert!(warmup.is_operational());
+        assert_eq!(system.metric_mean(), 1.0);
+    }
+
+    #[tokio::test]
+    async fn warmup_propagates_failure_and_timeout() {
+        let mut failed = MockMetricSystem { variance: 0.0, calls: 0, delay_ms: 0, fail: true };
+        let mut warmup = GeometricWarmup::new().with_spikes(1);
+        assert!(matches!(warmup.warmup(&mut failed).await, Err(WarmupError::ConvergenceFailed)));
+        let mut slow = MockMetricSystem { variance: 1.0, calls: 0, delay_ms: 2, fail: false };
+        let mut timeout = GeometricWarmup::new().with_spikes(1).with_timeout(0);
+        assert!(matches!(timeout.warmup(&mut slow).await, Err(WarmupError::Timeout(_))));
     }
 }

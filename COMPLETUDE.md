@@ -265,3 +265,18 @@ As features abaixo foram adicionadas com implementação executável no módulo 
 ### Limitações honestas de validação
 
 Este sandbox não possui headers do kernel em execução nem `libbpf-dev`; portanto não foi possível validar localmente `.ko`, `insmod`, attach XDP, KUnit, `EPERM` real ou `perf c2c`. A implementação não declara esses critérios de hardware/ambiente como medidos até a execução dos workflows e da evidência descrita em `kineplex-kernel/README.md`.
+
+
+
+## Cobertura de Testes — Validação Atualizada
+
+A cobertura foi medida com `cargo-llvm-cov` após corrigir a compilação do workspace e ampliar os testes funcionais:
+
+| Métrica | Resultado | Gate |
+|---|---:|---:|
+| Lines | **97.23%** | 95% |
+| Regions | **96.39%** | 95% |
+| Functions | **95.09%** | 95% |
+| Testes Rust | **190** | todos passando |
+
+O workflow `.github/workflows/coverage.yml` agora executa o gate oficial com `--fail-under-lines 95`, `--fail-under-regions 95` e `--fail-under-functions 95`. A checagem não depende mais de parser textual frágil nem da opção inexistente `--text-summary`.

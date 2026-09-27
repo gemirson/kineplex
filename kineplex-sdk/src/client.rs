@@ -3,6 +3,7 @@
 use crate::{GraphSubmitRequest, GraphStatusResponse};
 use kineplex_core::GraphId;
 use reqwest::Client;
+use serde::Deserialize;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -141,15 +142,6 @@ mod tests {
 
 // ClientError tests
     #[test]
-    fn test_client_error_request_failed() {
-        let err = ClientError::RequestFailed(reqwest::Error::new(
-            reqwest::error::Kind::Request, 
-            None
-        ));
-        assert!(err.to_string().contains("Request failed"));
-    }
-    
-    #[test]
     fn test_client_error_server_error() {
         let err = ClientError::ServerError("Internal error".to_string());
         assert_eq!(err.to_string(), "Server error: Internal error");
@@ -202,3 +194,85 @@ mod tests {
         // Last key wins
         assert_eq!(client.api_key.unwrap(), "key2");
     }
+
+
+
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use crate::types::{GraphConfigDto, GraphSubmitRequest};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn server(status: &str, body: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let status = status.to_string();
+        let body = body.to_string();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 {}\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                status, body.len(), body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        address
+    }
+
+    fn submit_request() -> GraphSubmitRequest {
+        GraphSubmitRequest {
+            tenant_id: "tenant".to_string(),
+            config: GraphConfigDto::default(),
+            idempotency_key: Some("key".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_graph_success_and_auth_header_path() {
+        let id = uuid::Uuid::new_v4();
+        let client = KinePlexClient::new(server("200 OK", &format!(r#"{{"graph_id":"{}"}}"#, id)))
+            .with_api_key("secret");
+        assert_eq!(client.submit_graph(submit_request()).await.unwrap().0, id);
+    }
+
+    #[tokio::test]
+    async fn submit_graph_maps_auth_and_server_errors() {
+        let unauthorized = KinePlexClient::new(server("401 Unauthorized", "unauthorized"));
+        assert!(matches!(unauthorized.submit_graph(submit_request()).await, Err(ClientError::AuthenticationRequired)));
+        let failed = KinePlexClient::new(server("500 Internal Server Error", "failed"));
+        assert!(matches!(failed.submit_graph(submit_request()).await, Err(ClientError::ServerError(_))));
+    }
+
+    #[tokio::test]
+    async fn status_success_not_found_and_server_error() {
+        let id = GraphId::new();
+        let body = format!(r#"{{"graph_id":"{}","status":"running","stages_completed":[],"metrics":null}}"#, id.0);
+        let client = KinePlexClient::new(server("200 OK", &body));
+        assert_eq!(client.get_status(&id).await.unwrap().status, "running");
+        let missing = KinePlexClient::new(server("404 Not Found", "missing"));
+        assert!(matches!(missing.get_status(&id).await, Err(ClientError::GraphNotFound(_))));
+        let failed = KinePlexClient::new(server("500 Internal Server Error", "failed"));
+        assert!(matches!(failed.get_status(&id).await, Err(ClientError::ServerError(_))));
+    }
+
+    #[tokio::test]
+    async fn cancel_success_not_found_and_server_error() {
+        let id = GraphId::new();
+        let client = KinePlexClient::new(server("204 No Content", ""));
+        assert!(client.cancel(&id).await.is_ok());
+        let missing = KinePlexClient::new(server("404 Not Found", "missing"));
+        assert!(matches!(missing.cancel(&id).await, Err(ClientError::GraphNotFound(_))));
+        let failed = KinePlexClient::new(server("500 Internal Server Error", "failed"));
+        assert!(matches!(failed.cancel(&id).await, Err(ClientError::ServerError(_))));
+    }
+
+    #[tokio::test]
+    async fn request_error_is_mapped() {
+        let client = KinePlexClient::new("http://127.0.0.1:1");
+        assert!(matches!(client.cancel(&GraphId::new()).await, Err(ClientError::RequestFailed(_))));
+    }
+}

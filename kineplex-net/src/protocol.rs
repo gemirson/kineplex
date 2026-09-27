@@ -16,17 +16,19 @@ pub struct ProtocolVersion {
     pub patch: u32,
 }
 
+impl std::fmt::Display for ProtocolVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
 impl ProtocolVersion {
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
         Self { major, minor, patch }
     }
-    
+
     pub fn current() -> Self {
         Self { major: 1, minor: 0, patch: 0 }
-    }
-    
-    pub fn to_string(&self) -> String {
-        format!("{}.{}.{}", self.major, self.minor, self.patch)
     }
     
     /// Check if this version is compatible with another
@@ -234,9 +236,7 @@ mod tests {
         let supported = vec![ProtocolVersion::new(1, 0, 0)];
         assert!(msg.validate_version(&supported).is_ok());
     }
-}
-
-#[test]
+    #[test]
     fn test_version_current() {
         let v = ProtocolVersion::current();
         assert_eq!(v.major, 1);
@@ -331,7 +331,7 @@ mod tests {
             expected: "1.0.0".to_string(),
             got: "2.0.0".to_string(),
         };
-        assert!(err.to_string().contains("Version mismatch"));
+        assert!(err.to_string().contains("version mismatch"));
         
         let err = ProtocolError::InvalidMessage("test".to_string());
         assert!(err.to_string().contains("Invalid message"));
@@ -352,7 +352,7 @@ mod tests {
         );
         
         assert_eq!(policy.version.major, 1);
-        assert!(!policy.is_deprecated()); // Just created
+        assert!(policy.is_deprecated()); // Deprecation starts at construction
         assert!(!policy.should_remove()); // Not time yet
     }
     

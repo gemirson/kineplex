@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 
 /// Pipeline executor for distributed execution
 pub struct PipelineExecutor {
-    cluster: Arc<ClusterManager>,
+    _cluster: Arc<ClusterManager>,
     running_executions: RwLock<HashMap<GraphId, ExecutionState>>,
 }
 
@@ -29,7 +29,7 @@ pub struct ExecutionState {
 impl PipelineExecutor {
     pub fn new(cluster: Arc<ClusterManager>) -> Self {
         Self {
-            cluster,
+            _cluster: cluster,
             running_executions: RwLock::new(HashMap::new()),
         }
     }
@@ -179,5 +179,44 @@ mod tests {
         
         let result = result.unwrap();
         assert_eq!(result.status, GraphStatus::Completed);
+    }
+}
+
+
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use kineplex_core::create_distributed_graph;
+
+    #[tokio::test]
+    async fn execution_state_lookup_cancel_and_replan() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = PipelineExecutor::new(cluster);
+        let graph_id = GraphId::new();
+        executor.running_executions.write().await.insert(graph_id.clone(), ExecutionState {
+            graph_id: graph_id.clone(),
+            current_stage: 2,
+            started_at: Instant::now(),
+            stage_start_times: HashMap::new(),
+            node_id: NodeId::new(),
+        });
+        assert_eq!(executor.get_execution_state(&graph_id).await.unwrap().current_stage, 2);
+        executor.replan_on_failure(&NodeId::new(), &graph_id).await.unwrap();
+        executor.cancel(&graph_id).await.unwrap();
+        assert!(executor.get_execution_state(&graph_id).await.is_none());
+        assert!(executor.cancel(&graph_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn execution_empty_graph_cleans_state() {
+        let cluster = Arc::new(ClusterManager::new());
+        let executor = PipelineExecutor::new(cluster);
+        let mut graph = create_distributed_graph(None, kineplex_core::GraphConfig::default());
+        graph.stages.clear();
+        let id = graph.id.clone();
+        let result = executor.execute(graph).await.unwrap();
+        assert_eq!(result.graph_id, id);
+        assert!(executor.get_execution_state(&id).await.is_none());
     }
 }

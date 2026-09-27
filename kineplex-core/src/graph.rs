@@ -5,11 +5,11 @@
 //! - Execution pipeline orchestration
 //! - Idempotency checking
 
-use crate::{Result, CoreError, GraphId, Graph, GraphStatus, GraphConfig, ExecutionResult, ExecutionMetrics};
+use crate::{Result, CoreError, GraphId, Graph, GraphStatus, ExecutionResult, ExecutionMetrics};
 use std::sync::Arc;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use chrono::Utc;
 
 /// Graph store for managing graph state
@@ -244,5 +244,58 @@ mod tests {
         
         let not_exists = store.check_idempotency("non-existent");
         assert!(not_exists.is_none());
+    }
+}
+
+
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn graph() -> Graph {
+        crate::create_distributed_graph(Some("tenant".to_string()), crate::GraphConfig::default())
+    }
+
+    #[test]
+    fn store_updates_status_and_lists_graphs() {
+        let store = GraphStore::new();
+        let id = store.create_graph(graph()).unwrap();
+        store.update_status(&id, GraphStatus::Running).unwrap();
+        assert_eq!(store.get_graph(&id).unwrap().status, GraphStatus::Running);
+        assert_eq!(store.list_graphs().len(), 1);
+        assert!(store.update_status(&GraphId::new(), GraphStatus::Running).is_err());
+    }
+
+    #[test]
+    fn idempotency_key_expiration_and_default_store() {
+        let key = IdempotencyKey::new("key".to_string(), 1);
+        assert!(key.is_valid());
+        let expired = IdempotencyKey::new("expired".to_string(), -1);
+        assert!(!expired.is_valid());
+        let store = GraphStore::default();
+        assert!(store.list_graphs().is_empty());
+    }
+
+    #[tokio::test]
+    async fn distributed_executor_runs_and_reports_status() {
+        let store = Arc::new(GraphStore::new());
+        let executor = DistributedGraphExecutor::new(store.clone());
+        let id = executor.submit(graph(), Some("request-1".to_string())).unwrap();
+        assert_eq!(executor.submit(graph(), Some("request-1".to_string())).unwrap(), id);
+        let result = executor.execute(&id).await.unwrap();
+        assert!(result.is_success());
+        assert_eq!(executor.status(&id).unwrap(), GraphStatus::Completed);
+        assert_eq!(result.metrics.stage_times_ms.len(), 4);
+    }
+
+    #[test]
+    fn distributed_executor_cancel_and_missing_errors() {
+        let store = Arc::new(GraphStore::new());
+        let executor = DistributedGraphExecutor::new(store);
+        let id = executor.submit(graph(), None).unwrap();
+        executor.cancel(&id).unwrap();
+        assert_eq!(executor.status(&id).unwrap(), GraphStatus::Cancelled);
+        assert!(executor.status(&GraphId::new()).is_err());
     }
 }

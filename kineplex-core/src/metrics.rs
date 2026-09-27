@@ -5,7 +5,6 @@
 //! - OTLP compatible metrics
 //! - Custom metrics for pipeline stages
 
-use std::sync::Arc;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
@@ -310,5 +309,67 @@ mod tests {
         tracker.record_request(false, 300);
         
         assert_eq!(tracker.current_sli(), 2.0 / 3.0);
+    }
+}
+
+
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn metric_constructors_and_labels() {
+        let counter = Metric::counter("requests", 2).with_label("tenant", "a");
+        assert_eq!(counter.name, "requests");
+        assert!(matches!(counter.value, MetricValue::Counter(2)));
+        assert_eq!(counter.labels.get("tenant"), Some(&"a".to_string()));
+        assert!(matches!(Metric::gauge("load", 1.0).value, MetricValue::Gauge(_)));
+        assert!(matches!(Metric::histogram("latency", 2.0).value, MetricValue::Histogram(_)));
+        assert!(matches!(MetricValue::Summary { sum: 1.0, count: 1 }, MetricValue::Summary { .. }));
+    }
+
+    #[test]
+    fn collector_handles_labels_clear_and_export() {
+        let collector = MetricsCollector::default();
+        let mut labels = HashMap::new();
+        labels.insert("zone".to_string(), "a".to_string());
+        labels.insert("tenant".to_string(), "t1".to_string());
+        collector.inc_counter("requests", Some(labels.clone()));
+        collector.inc_counter("requests", Some(labels.clone()));
+        collector.set_gauge("load", 0.5, Some(labels.clone()));
+        collector.observe_histogram("latency", 12.0, Some(labels));
+        assert!(collector.export_prometheus().contains("requests"));
+        assert_eq!(collector.get_metrics().len(), 4);
+        collector.clear();
+        assert!(collector.get_metrics().is_empty());
+    }
+
+    #[test]
+    fn pipeline_metrics_and_slo_presets_are_serializable() {
+        let pipeline = PipelineMetrics {
+            stage_latency_ms: [("wasm".to_string(), 10)].into_iter().collect(),
+            stage_rows: [("wasm".to_string(), 2)].into_iter().collect(),
+            stage_errors: HashMap::new(),
+            stage_bytes: HashMap::new(),
+        };
+        let json = serde_json::to_string(&pipeline).unwrap();
+        assert!(json.contains("wasm"));
+        assert_eq!(slo_presets::availability_999().name, "availability");
+        assert_eq!(slo_presets::latency_p95().window, "5m");
+        assert_eq!(slo_presets::error_rate_1percent().error_budget_percent, 99.0);
+    }
+
+    #[test]
+    fn slo_tracker_empty_p95_and_sample_window() {
+        let mut tracker = SloTracker::new(SloConfig::new("test", 0.75, "1m"));
+        assert_eq!(tracker.current_sli(), 1.0);
+        assert_eq!(tracker.p95_latency(), 0);
+        assert!(tracker.is_slo_met());
+        for i in 0..1005 {
+            tracker.record_request(i % 2 == 0, i as u64);
+        }
+        assert!(tracker.p95_latency() > 0);
+        assert!(!tracker.is_slo_met());
     }
 }
