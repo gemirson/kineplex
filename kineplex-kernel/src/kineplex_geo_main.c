@@ -48,6 +48,17 @@ static long kineplex_geo_ioctl(struct file *file,
 		if (copy_to_user((void __user *)arg, &info, sizeof(info)))
 			return -EFAULT;
 		return 0;
+	case KINEPLEX_GEO_IOC_GET_TELEMETRY: {
+		struct kineplex_geo_telemetry_snapshot snapshot;
+
+		kineplex_geo_telemetry_snapshot(&snapshot);
+		if (copy_to_user((void __user *)arg, &snapshot, sizeof(snapshot)))
+			return -EFAULT;
+		return 0;
+	}
+	case KINEPLEX_GEO_IOC_RESET_TELEMETRY:
+		kineplex_geo_telemetry_reset();
+		return 0;
 	default:
 		return -ENOTTY;
 	}
@@ -87,6 +98,10 @@ static int __init kineplex_geo_init(void)
 		return ret;
 	}
 
+	ret = kineplex_geo_telemetry_init();
+	if (ret)
+		goto err_numa;
+
 	ret = alloc_chrdev_region(&kineplex_geo_dev, 0, 1, KINEPLEX_GEO_DEVICE_NAME);
 	if (ret)
 		goto err_numa;
@@ -125,6 +140,7 @@ err_cdev:
 err_chrdev:
 	unregister_chrdev_region(kineplex_geo_dev, 1);
 err_numa:
+	kineplex_geo_telemetry_destroy();
 	dev_put(nic);
 	kineplex_geo_numa_destroy(&kineplex_geo_ctx);
 	return ret;
@@ -138,6 +154,7 @@ static void __exit kineplex_geo_exit(void)
 	class_destroy(kineplex_geo_class);
 	cdev_del(&kineplex_geo_cdev);
 	unregister_chrdev_region(kineplex_geo_dev, 1);
+	kineplex_geo_telemetry_destroy();
 	kineplex_geo_numa_destroy(&kineplex_geo_ctx);
 	if (nic)
 		dev_put(nic);

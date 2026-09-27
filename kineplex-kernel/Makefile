@@ -4,7 +4,8 @@
 obj-m += kineplex_geo.o
 kineplex_geo-y := \
 	src/kineplex_geo_main.o \
-	src/kineplex_geo_numa.o
+	src/kineplex_geo_numa.o \
+	src/kineplex_geo_telemetry.o
 
 ccflags-y += -I$(src)/include
 

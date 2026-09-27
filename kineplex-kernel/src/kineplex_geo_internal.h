@@ -40,6 +40,8 @@ int kineplex_geo_numa_mmap(struct kineplex_geo_context *ctx,
 			   struct vm_area_struct *vma);
 
 /* FT-094: per-CPU counters have no global write-side lock. */
+int kineplex_geo_telemetry_init(void);
+void kineplex_geo_telemetry_destroy(void);
 void kineplex_geo_telemetry_record(bool dropped, u64 bytes, u64 latency_ns);
 void kineplex_geo_telemetry_snapshot(
 		struct kineplex_geo_telemetry_snapshot *snapshot);
