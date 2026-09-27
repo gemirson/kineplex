@@ -235,3 +235,175 @@ mod tests {
         assert!(msg.validate_version(&supported).is_ok());
     }
 }
+
+#[test]
+    fn test_version_current() {
+        let v = ProtocolVersion::current();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 0);
+    }
+    
+    #[test]
+    fn test_version_to_string() {
+        let v = ProtocolVersion::new(1, 2, 3);
+        assert_eq!(v.to_string(), "1.2.3");
+    }
+    
+    #[test]
+    fn test_version_equal() {
+        let v1 = ProtocolVersion::new(1, 2, 3);
+        let v2 = ProtocolVersion::new(1, 2, 3);
+        assert_eq!(v1, v2);
+    }
+    
+    #[test]
+    fn test_version_not_compatible_different_major() {
+        let v1 = ProtocolVersion::new(1, 0, 0);
+        let v2 = ProtocolVersion::new(2, 0, 0);
+        assert!(!v1.is_compatible(&v2));
+    }
+    
+    #[test]
+    fn test_version_not_newer() {
+        let v1 = ProtocolVersion::new(1, 0, 0);
+        let v2 = ProtocolVersion::new(1, 0, 0);
+        assert!(!v2.is_newer_than(&v1));
+    }
+    
+    #[test]
+    fn test_message_type_variants() {
+        // Test all message type variants exist
+        let _ = MessageType::SubmitGraph;
+        let _ = MessageType::GetStatus;
+        let _ = MessageType::CancelExecution;
+        let _ = MessageType::AllocateNodes;
+        let _ = MessageType::Gossip;
+        let _ = MessageType::Heartbeat;
+        let _ = MessageType::Join;
+        let _ = MessageType::Leave;
+        let _ = MessageType::Failure;
+        let _ = MessageType::ExecuteStage;
+        let _ = MessageType::StageComplete;
+        let _ = MessageType::DataTransfer;
+    }
+    
+    #[test]
+    fn test_protocol_message_creation() {
+        let msg = ProtocolMessage::new(
+            MessageType::SubmitGraph,
+            r#"{"key": "value"}"#.to_string(),
+            "node-1".to_string(),
+        );
+        
+        assert_eq!(msg.message_type, MessageType::SubmitGraph);
+        assert_eq!(msg.source, "node-1");
+        assert!(msg.target.is_none());
+    }
+    
+    #[test]
+    fn test_protocol_message_with_target() {
+        let msg = ProtocolMessage::new(
+            MessageType::ExecuteStage,
+            "{}".to_string(),
+            "node-1".to_string(),
+        ).with_target("node-2".to_string());
+        
+        assert_eq!(msg.target, Some("node-2".to_string()));
+    }
+    
+    #[test]
+    fn test_protocol_message_validation_fails() {
+        let msg = ProtocolMessage::new(
+            MessageType::SubmitGraph,
+            "{}".to_string(),
+            "node-1".to_string(),
+        );
+        
+        let supported = vec![ProtocolVersion::new(2, 0, 0)]; // Different major version
+        let result = msg.validate_version(&supported);
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_protocol_error_display() {
+        let err = ProtocolError::VersionMismatch {
+            expected: "1.0.0".to_string(),
+            got: "2.0.0".to_string(),
+        };
+        assert!(err.to_string().contains("Version mismatch"));
+        
+        let err = ProtocolError::InvalidMessage("test".to_string());
+        assert!(err.to_string().contains("Invalid message"));
+        
+        let err = ProtocolError::SerializationError("test".to_string());
+        assert!(err.to_string().contains("Serialization error"));
+        
+        let err = ProtocolError::UnsupportedMessageType("test".to_string());
+        assert!(err.to_string().contains("Unsupported message type"));
+    }
+    
+    #[test]
+    fn test_deprecation_policy_creation() {
+        let policy = DeprecationPolicy::new(
+            ProtocolVersion::new(1, 0, 0),
+            90,
+            "Migration guide URL",
+        );
+        
+        assert_eq!(policy.version.major, 1);
+        assert!(!policy.is_deprecated()); // Just created
+        assert!(!policy.should_remove()); // Not time yet
+    }
+    
+    #[test]
+    fn test_deprecation_policy_serialization() {
+        let policy = DeprecationPolicy::new(
+            ProtocolVersion::new(1, 0, 0),
+            90,
+            "Migration guide",
+        );
+        
+        let serialized = serde_json::to_string(&policy).unwrap();
+        let deserialized: DeprecationPolicy = serde_json::from_str(&serialized).unwrap();
+        
+        assert_eq!(policy.version, deserialized.version);
+    }
+    
+    #[test]
+    fn test_compatibility_entry() {
+        let entry = CompatibilityEntry {
+            client_version: ProtocolVersion::new(1, 0, 0),
+            server_version: ProtocolVersion::new(1, 1, 0),
+            compatible: true,
+            tested_at: Utc::now(),
+        };
+        
+        assert!(entry.compatible);
+        assert!(entry.client_version.is_compatible(&entry.server_version));
+    }
+    
+    #[test]
+    fn test_version_negotiation_request() {
+        let request = VersionNegotiationRequest {
+            supported_versions: vec![
+                ProtocolVersion::new(1, 0, 0),
+                ProtocolVersion::new(1, 1, 0),
+            ],
+            client_version: ProtocolVersion::new(1, 0, 0),
+        };
+        
+        assert_eq!(request.supported_versions.len(), 2);
+    }
+    
+    #[test]
+    fn test_version_negotiation_response() {
+        let response = VersionNegotiationResponse {
+            accepted_version: ProtocolVersion::new(1, 0, 0),
+            deprecation_warning: Some("Version 1.0.0 will be deprecated".to_string()),
+        };
+        
+        assert_eq!(response.accepted_version.major, 1);
+        assert!(response.deprecation_warning.is_some());
+    }
+}

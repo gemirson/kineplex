@@ -1,5 +1,5 @@
-# CI/CD Pipeline para Testes Funcionais do Driver - FT-084
-# Testes funcionais KUnit + smoke io_uring/debugfs
+# Validações executáveis do driver e XDP.
+# KUnit/insmod precisam de uma VM Linux com headers e permissões de kernel.
 
 name: Kernel Driver Tests
 
@@ -8,97 +8,105 @@ on:
     branches: [main, develop, 'feature/**']
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
 
 jobs:
-  # KUnit tests - testes unitários do kernel
-  kunit-tests:
+  static-contract:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup kernel build environment
+      - name: Validate FT-093..FT-096 source contracts
+        run: tests/kernel/static_validation.sh
+
+  module-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install kernel build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            kmod \
-            linux-headers-$(uname -r) \
-            pkg-config
+          sudo apt-get install -y build-essential clang llvm kmod util-linux linux-headers-$(uname -r)
 
-      - name: Build and load KUnit tests
-        run: |
-          # Build KUnit tests
-          make KUNIT=1
-          
-          # Run KUnit tests (requires root)
-          sudo sh -c './run_kunit.sh > kunit_results.xml'
-          
-      - name: Upload results
-        uses: actions/upload-artifact@v4
-        with:
-          name: kunit-results
-          path: kunit_results.xml
+      - name: Build module against runner kernel
+        run: make -C kineplex-kernel KDIR=/lib/modules/$(uname -r)/build
 
-  # Smoke tests - io_uring e debugfs
-  smoke-tests:
+      - name: Build BPF object
+        run: make -C tools bpf
+
+  loader-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build driver
-        run: make
-
-      - name: Load driver module
+      - name: Install libbpf build dependencies
         run: |
-          sudo insmod kineplex.ko
-          lsmod | grep kineplex
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang libbpf-dev pkg-config
 
-      - name: Test io_uring command path
-        run: |
-          # Setup io_uring
-          echo "Testing IORING_OP_URING_CMD..."
-          ./test_io_uring_cmd.sh
+      - name: Compile userspace lifecycle loader
+        run: make -C tools loader
 
-      - name: Test debugfs interface
-        run: |
-          # Mount debugfs
-          sudo mount -t debugfs none /sys/kernel/debug
-          
-          # Test debugfs read
-          echo "Testing debugfs interface..."
-          cat /sys/kernel/debug/kineplex/status
-          cat /sys/kernel/debug/kineplex/metrics
-
-      - name: Unload driver
-        run: |
-          sudo rmmod kineplex
-
-  # Geometric invariant tests
-  geometric-tests:
+  # This job is intentionally manual: loading an LKM and attaching XDP changes
+  # the runner network namespace and requires a kernel with a suitable NIC.
+  privileged-integration:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run geometric validation
+      - name: Install integration dependencies
         run: |
-          # Test geometric invariants
-          ./test_geometric_invariants.sh
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang llvm kmod util-linux linux-headers-$(uname -r)
 
-  # Integration test summary
+      - name: Build artifacts
+        run: |
+          make -C kineplex-kernel KDIR=/lib/modules/$(uname -r)/build
+          make -C tools bpf
+
+      - name: Load module on an explicitly selected NIC
+        env:
+          KINEPLEX_NIC: ${{ vars.KINEPLEX_NIC || 'eth0' }}
+        run: |
+          sudo insmod kineplex-kernel/kineplex_geo.ko nic_ifname="$KINEPLEX_NIC"
+          test -c /dev/kinegeo
+
+      - name: Run unprivileged capability test
+        run: |
+          sudo chown root:root tests/kernel/capability_smoke.sh
+          setpriv --reuid=nobody --regid=nogroup --clear-groups \
+            tests/kernel/capability_smoke.sh /dev/kinegeo
+
+      - name: Unload module
+        if: always()
+        run: sudo rmmod kineplex_geo
+
   test-summary:
-    needs: [kunit-tests, smoke-tests, geometric-tests]
-    runs-on: ubuntu-latest
     if: always()
+    needs: [static-contract, module-build, loader-build, privileged-integration]
+    runs-on: ubuntu-latest
     steps:
-      - name: Generate test summary
+      - name: Publish test summary and fail closed
         run: |
-          echo "## Test Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| KUnit | ${{ needs.kunit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Smoke Tests | ${{ needs.smoke-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Geometric Tests | ${{ needs.geometric-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo '## Kernel test summary'
+            echo
+            echo '| Suite | Result |'
+            echo '|---|---|'
+            echo '| Static contract | ${{ needs.static-contract.result }} |'
+            echo '| Module build | ${{ needs.module-build.result }} |'
+            echo '| libbpf loader build | ${{ needs.loader-build.result }} |'
+            echo '| Privileged integration | ${{ needs.privileged-integration.result }} |'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "${{ needs.static-contract.result }}" = success
+          test "${{ needs.module-build.result }}" = success
+          test "${{ needs.loader-build.result }}" = success
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            test "${{ needs.privileged-integration.result }}" = success
+          fi

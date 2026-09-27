@@ -138,3 +138,67 @@ mod tests {
         assert!(client.api_key.is_some());
     }
 }
+
+// ClientError tests
+    #[test]
+    fn test_client_error_request_failed() {
+        let err = ClientError::RequestFailed(reqwest::Error::new(
+            reqwest::error::Kind::Request, 
+            None
+        ));
+        assert!(err.to_string().contains("Request failed"));
+    }
+    
+    #[test]
+    fn test_client_error_server_error() {
+        let err = ClientError::ServerError("Internal error".to_string());
+        assert_eq!(err.to_string(), "Server error: Internal error");
+    }
+    
+    #[test]
+    fn test_client_error_graph_not_found() {
+        let err = ClientError::GraphNotFound("graph-123".to_string());
+        assert_eq!(err.to_string(), "Graph not found: graph-123");
+    }
+    
+    #[test]
+    fn test_client_error_authentication_required() {
+        let err = ClientError::AuthenticationRequired;
+        assert_eq!(err.to_string(), "Authentication required");
+    }
+    
+    #[test]
+    fn test_client_error_display() {
+        let err = ClientError::ServerError("test".to_string());
+        let _ = format!("{}", err);
+    }
+    
+    #[test]
+    fn test_client_default_url() {
+        let client = KinePlexClient::new("localhost:8080");
+        assert_eq!(client.base_url, "localhost:8080");
+    }
+    
+    #[test]
+    fn test_client_with_https_url() {
+        let client = KinePlexClient::new("https://api.example.com");
+        assert_eq!(client.base_url, "https://api.example.com");
+    }
+    
+    #[test]
+    fn test_client_api_key_persistence() {
+        let client = KinePlexClient::new("http://localhost:8080")
+            .with_api_key("my-secret-key");
+        
+        assert_eq!(client.api_key.unwrap(), "my-secret-key");
+    }
+    
+    #[test]
+    fn test_client_multiple_api_key() {
+        let client = KinePlexClient::new("http://localhost:8080")
+            .with_api_key("key1")
+            .with_api_key("key2");
+        
+        // Last key wins
+        assert_eq!(client.api_key.unwrap(), "key2");
+    }
