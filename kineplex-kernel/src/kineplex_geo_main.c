@@ -5,6 +5,9 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/uaccess.h>
+#if IS_ENABLED(CONFIG_IO_URING)
+#include <linux/io_uring.h>
+#endif
 
 #include "kineplex_geo_internal.h"
 
@@ -23,6 +26,10 @@ static struct device *kineplex_geo_device;
 
 static int kineplex_geo_open(struct inode *inode, struct file *file)
 {
+	int ret = kineplex_geo_require_net_admin();
+
+	if (ret)
+		return ret;
 	file->private_data = &kineplex_geo_ctx;
 	return 0;
 }
@@ -39,6 +46,10 @@ static long kineplex_geo_ioctl(struct file *file,
 {
 	struct kineplex_geo_device_info info = { 0 };
 	int ret;
+
+	ret = kineplex_geo_require_net_admin();
+	if (ret)
+		return ret;
 
 	switch (cmd) {
 	case KINEPLEX_GEO_IOC_GET_INFO:
@@ -66,8 +77,28 @@ static long kineplex_geo_ioctl(struct file *file,
 
 static int kineplex_geo_mmap(struct file *file, struct vm_area_struct *vma)
 {
+	int ret = kineplex_geo_require_net_admin();
+
+	if (ret)
+		return ret;
 	return kineplex_geo_numa_mmap(&kineplex_geo_ctx, vma);
 }
+
+#if IS_ENABLED(CONFIG_IO_URING)
+static int kineplex_geo_uring_cmd(struct io_uring_cmd *cmd,
+				  unsigned int issue_flags)
+{
+	/* FT-096: reject every uring command from callers without CAP_NET_ADMIN. */
+	(void)issue_flags;
+	if (kineplex_geo_require_net_admin())
+		return -EPERM;
+	if (!cmd)
+		return -EINVAL;
+
+	/* The ABI is intentionally deny-by-default until a command is specified. */
+	return -EOPNOTSUPP;
+}
+#endif
 
 static const struct file_operations kineplex_geo_fops = {
 	.owner = THIS_MODULE,
@@ -75,6 +106,9 @@ static const struct file_operations kineplex_geo_fops = {
 	.release = kineplex_geo_release,
 	.unlocked_ioctl = kineplex_geo_ioctl,
 	.mmap = kineplex_geo_mmap,
+#if IS_ENABLED(CONFIG_IO_URING)
+	.uring_cmd = kineplex_geo_uring_cmd,
+#endif
 	.llseek = no_llseek,
 };
 
