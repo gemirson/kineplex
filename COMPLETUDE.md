@@ -194,3 +194,48 @@ Todas as 18 features (FT-071 a FT-088) foram implementadas conforme os critério
 2. **Testes de Integração**: Validar comunicação mTLS entre nós
 3. **Build do Kernel**: Executar workflow de build contra kernels reais
 4. **Revisão Operacional**: Aprovar runbooks em ambiente de homolog
+
+---
+
+## FT-089 a FT-092 - Novas Features de Controle Geométrico
+
+Adicionadas em 26/09/2026:
+
+| Feature | Descrição | Status | Completude |
+|---------|-----------|--------|------------|
+| **FT-089** | Controlador de Passo Adaptativo PID | ✅ | 100% |
+| **FT-090** | Normalização de Volume do Tensor Métrico | ✅ | 100% |
+| **FT-091** | Descoberta de 2-Simplexos (Faces Triangulares) | ✅ | 100% |
+| **FT-092** | Fase de Aquecimento Geométrico (Warm-up) | ✅ | 100% |
+
+### FT-089 - Controlador PID Adaptativo
+- Implementação do controlador PID com ganhos Kp, Ki, Kd
+- Limites ajustáveis (epsilon_min, epsilon_max)
+- Detecção de estabilidade e oscilação
+- Histórico de epsilon com cálculo de variância
+
+### FT-090 - Normalização de Volume
+- Normalização para manter volume constante
+- Proteção contra overflow (u32) e underflow
+- Verificação de limites e estabilidade
+
+### FT-091 - 2-Simplexos e Homologia
+- Descoberta de triângulos na rede
+- Cálculo do Número de Betti (β₁)
+- Identificação de partições/topologia
+
+### FT-092 - Warm-up Geométrico
+- Spikes sintéticos para inicialização
+- Threshold de convergência
+- Timeout configurável
+
+---
+
+## Estatísticas Atualizadas
+
+| Métrica | Valor Anterior | Valor Atual |
+|---------|----------------|-------------|
+| **Features Totais** | 18 | 22 |
+| **Linhas de Código (Rust)** | 3,041 | ~4,500 |
+| **Arquivos Rust** | 18 | 19 |
+| **Documentos** | 10 | 11 |
