@@ -108,12 +108,15 @@ int kineplex_geo_numa_info(const struct kineplex_geo_context *ctx,
 int kineplex_geo_numa_mmap(struct kineplex_geo_context *ctx,
 			   struct vm_area_struct *vma)
 {
-	unsigned long requested = vma->vm_end - vma->vm_start;
-	unsigned long expected = PAGE_SIZE << ctx->tensor_order;
+	unsigned long requested;
+	unsigned long expected;
 	int ret;
 
 	if (!ctx || !vma || !ctx->tensor_page)
 		return -ENODEV;
+
+	requested = vma->vm_end - vma->vm_start;
+	expected = PAGE_SIZE << ctx->tensor_order;
 	if (requested != expected)
 		return -EINVAL;
 

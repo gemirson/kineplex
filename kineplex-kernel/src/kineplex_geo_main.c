@@ -5,6 +5,7 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/uaccess.h>
+#include <linux/version.h>
 #if IS_ENABLED(CONFIG_IO_URING)
 #include <linux/io_uring.h>
 #endif
@@ -146,7 +147,11 @@ static int __init kineplex_geo_init(void)
 	if (ret)
 		goto err_chrdev;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+	kineplex_geo_class = class_create(KINEPLEX_GEO_DEVICE_NAME);
+#else
 	kineplex_geo_class = class_create(THIS_MODULE, KINEPLEX_GEO_DEVICE_NAME);
+#endif
 	if (IS_ERR(kineplex_geo_class)) {
 		ret = PTR_ERR(kineplex_geo_class);
 		kineplex_geo_class = NULL;

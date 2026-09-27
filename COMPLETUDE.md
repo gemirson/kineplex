@@ -239,3 +239,29 @@ Adicionadas em 26/09/2026:
 | **Linhas de Código (Rust)** | 3,041 | ~4,500 |
 | **Arquivos Rust** | 18 | 19 |
 | **Documentos** | 10 | 11 |
+
+
+
+---
+
+## FT-093 a FT-096 — Driver kernel e XDP v0.3
+
+As features abaixo foram adicionadas com implementação executável no módulo out-of-tree, UAPI, programa BPF, loader libbpf e validações estáticas:
+
+| Feature | Implementação | Evidência disponível | Estado |
+|---|---|---|---|
+| FT-093 NUMA-aware allocation | `dev_to_node`, `kmem_cache_alloc_node`, `alloc_pages_node` com `__GFP_THISNODE`, mmap de página local | `kineplex-kernel/src/kineplex_geo_numa.c`, `README.md` | Implementada; `perf c2c` depende de VM/hardware alvo |
+| FT-094 XDP per-CPU telemetry | `alloc_percpu`, snapshot agregado, `BPF_MAP_TYPE_PERCPU_ARRAY` | `kineplex_geo_telemetry.c`, `bpf/kineplex_geo_xdp.bpf.c` | Implementada; throughput multi-queue depende de NIC alvo |
+| FT-095 eBPF/XDP lifecycle | `bpf_program__attach_xdp`, link não pinado, detach explícito e cleanup por FD | `tools/kineplex_geo_loader.c`, `docs/xdp-lifecycle.md` | Implementada; attach real depende de libbpf/NIC |
+| FT-096 capability enforcement | `CAP_NET_ADMIN` em open/ioctl/mmap/uring_cmd e ABI deny-by-default | `kineplex_geo_main.c`, `docs/kernel-security.md` | Implementada; EPERM requer teste em kernel |
+
+### Validações executáveis
+
+- `tests/kernel/static_validation.sh` verifica todos os contratos FT-093..FT-096 e compila o objeto XDP.
+- `tests/kernel/capability_smoke.sh` e `capability_smoke.c` verificam `EPERM` como usuário sem privilégio, após setup administrativo.
+- `.github/workflows/kernel-build.yml` compila o módulo contra os kernels dos runners Ubuntu 22.04/24.04, compila o BPF e publica hashes/artefatos.
+- `.github/workflows/kernel-tests.yml` executa contrato estático, build do módulo, build do loader libbpf e integração privilegiada somente por dispatch manual.
+
+### Limitações honestas de validação
+
+Este sandbox não possui headers do kernel em execução nem `libbpf-dev`; portanto não foi possível validar localmente `.ko`, `insmod`, attach XDP, KUnit, `EPERM` real ou `perf c2c`. A implementação não declara esses critérios de hardware/ambiente como medidos até a execução dos workflows e da evidência descrita em `kineplex-kernel/README.md`.

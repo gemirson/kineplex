@@ -8,6 +8,8 @@
  * so an unsafe rmmod is rejected by the kernel module while the link is live.
  */
 
+#define _GNU_SOURCE
+
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <errno.h>

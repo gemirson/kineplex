@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /* FT-096: this process must receive EPERM before device access. */
 
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
