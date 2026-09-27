@@ -1,4 +1,4 @@
-//! User-facing WebAssembly entry-point macro.
+//! User-facing WebAssembly entry-point macro and SDK helpers.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -81,4 +81,54 @@ fn is_record_batch(ty: &Type) -> bool {
             .is_some_and(|segment| segment.ident == "RecordBatch"),
         _ => false,
     }
+}
+
+/// Macro to derive Graph submission helper
+#[proc_macro_derive(GraphSubmit)]
+pub fn graph_submit_derive(input: TokenStream) -> TokenStream {
+    let _ = parse_macro_input!(input as syn::DeriveInput);
+    
+    quote! {
+        impl GraphSubmit {
+            pub fn new(tenant_id: impl Into<String>) -> Self {
+                Self {
+                    tenant_id: tenant_id.into(),
+                    config: GraphConfigDto::default(),
+                    idempotency_key: None,
+                }
+            }
+            
+            pub fn with_config(mut self, config: GraphConfigDto) -> Self {
+                self.config = config;
+                self
+            }
+            
+            pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
+                self.idempotency_key = Some(key.into());
+                self
+            }
+        }
+    }
+    .into()
+}
+
+/// Macro for creating a graph submission request builder
+#[proc_macro]
+pub fn submit_graph(input: TokenStream) -> TokenStream {
+    let raw = input.to_string();
+    let tenant_id = raw.trim().trim_matches('"');
+    let tenant_str = if tenant_id.is_empty() {
+        "default"
+    } else {
+        tenant_id
+    };
+    
+    quote! {
+        GraphSubmitRequest {
+            tenant_id: #tenant_str.to_string(),
+            config: GraphConfigDto::default(),
+            idempotency_key: None,
+        }
+    }
+    .into()
 }

@@ -1,33 +1,45 @@
-# KinePlex kernel driver
+# KinePlex Kernel Driver (v0.3)
 
-This directory contains the Linux out-of-tree driver for the v0.3 kernel features. It is deliberately separate from the Rust userspace workspace: Linux kernel code cannot link against `std`, Tokio, Arrow, or Wasmtime.
+This directory contains the Linux out-of-tree drivers for the KinePlex kernel features. It is deliberately separate from the Rust userspace workspace: Linux kernel code cannot link against `std`, Tokio, Arrow, or Wasmtime.
 
-## FT-066 — asynchronous geodesic resolution
+---
 
-The geometry worker consumes XDP-facing telemetry through `kineplex_geometry_update_telemetry()`. It recalculates a bounded Q16.16 metric and Christoffel symbols on a `WQ_HIGHPRI | WQ_UNBOUND | WQ_MEM_RECLAIM` workqueue. Every integration step calls `cond_resched()` and rejects jobs larger than `KINEPLEX_MAX_GEODESIC_STEPS`.
+## 1. Drivers e Módulos
 
-Build against the target kernel headers:
+### `kineplex.ko` — Driver Geométrico e Roteamento (FT-066 a FT-070)
 
-```text
+- **FT-066 — Resolução Geodésica Assíncrona:** O worker de geometria consome telemetria através de `kineplex_geometry_update_telemetry()`, recalculando a métrica Q16.16 e símbolos de Christoffel em uma workqueue de alta prioridade (`WQ_HIGHPRI | WQ_UNBOUND | WQ_MEM_RECLAIM`). Cada passo de integração chama `cond_resched()` e rejeita trabalhos maiores que `KINEPLEX_MAX_GEODESIC_STEPS`.
+- **FT-067 — Alocação Slab para Homotopias:** Objetos de deformação transiente são alocados a partir do `kmem_cache` customizado `kineplex_homotopy_cache` e zerados antes da publicação. A destruição do módulo garante liberação sem vazamentos.
+- **FT-068 — Sandbox Matemático Anti-Pânico:** Todas as divisões passam por helpers Q16.16 seguros. A inversão de matriz métrica 3x3 rejeita determinantes nulos com `-EDOM`.
+- **FT-069 — Comando io_uring para Roteamento:** O módulo registra `/dev/kineplex` com operações `.uring_cmd` (`IORING_OP_URING_CMD` com seletor `IORING_OP_KINEPLEX_ROUTE`).
+- **FT-070 — Debugfs de Topologia Global:** Cria `/sys/kernel/debug/kineplex/curvature_tensor` e `/sys/kernel/debug/kineplex/active_geodesics` utilizando RCU para leitura não bloqueante.
+
+### `kineplex_geo.ko` — Controle Geométrico, NUMA e XDP (FT-093 a FT-096)
+
+- **FT-093 — Alocação NUMA Estrita:** `src/kineplex_geo_numa.c` descobre o nó NUMA da NIC e usa `__GFP_THISNODE` no slab e páginas remapeáveis.
+- **FT-094 — Telemetria XDP per-CPU:** `src/kineplex_geo_telemetry.c` contadores `alloc_percpu` atualizados exclusivamente na CPU corrente.
+- **FT-095 — Gerenciamento de Ciclo de Vida eBPF:** `../bpf/kineplex_geo_xdp.bpf.c` e `../tools/kineplex_geo_loader.c` para attach/detach de `bpf_link` não pinado.
+- **FT-096 — Enforcement de CAP_NET_ADMIN:** `src/kineplex_geo_main.c` com dispositivo `/dev/kinegeo`, ioctl, mmap e validação de `capable(CAP_NET_ADMIN)`.
+
+---
+
+## 2. Compilação
+
+Para compilar contra os headers do kernel instalado:
+
+```sh
+# Compilação dos módulos
 make -C /lib/modules/$(uname -r)/build M=$PWD CONFIG_KINEPLEX=m CONFIG_KINEPLEX_KUNIT_TEST=m modules
+
+# Ou utilizando o Makefile local:
+make KDIR=/lib/modules/$(uname -r)/build
+
+# Compilar ferramentas auxiliares e BPF:
+make -C ../tools bpf
+make -C ../tools loader # requer libbpf-dev e pkg-config
 ```
 
-KUnit can be enabled with `CONFIG_KUNIT=y` and `CONFIG_KINEPLEX_KUNIT_TEST=m` in the target kernel configuration. No kernel headers are installed in the development sandbox, so the Kbuild command must run on a kernel build host.
-
-## FT-067 — homotopy slab allocation
-
-Transient deformation objects are allocated from the custom `kmem_cache` named `kineplex_homotopy_cache` and are zeroed before publication. Allocation, free, and in-use counters are exposed to KUnit; the test performs 10,000 allocate/free cycles and requires zero objects in use before cache destruction. `kineplex_homotopy_exit()` refuses to destroy a cache with outstanding objects, preventing unload-time leaks.
-
-## FT-068 — anti-panic mathematical sandbox
-
-All divisions used by the driver pass through checked Q16.16 helpers. The 3x3 metric inverse calculates a fixed-point determinant and cofactors, rejects a zero or sub-resolution determinant with `-EDOM`, and reports arithmetic overflow instead of allowing undefined behavior. The KUnit suite injects a singular tensor and verifies that it is rejected without a fault; it also verifies diagonal inversion and null/zero-denominator guards.
-
-## FT-069 — io_uring route command
-
-The module registers `/dev/kineplex` with a `.uring_cmd` file-operation. Userspace opens this device and submits `IORING_OP_URING_CMD` SQEs with `sqe->cmd_op = IORING_OP_KINEPLEX_ROUTE`; the route payload is copied into the command PDU, deferred with `io_uring_cmd_complete_in_task()`, and completed with `io_uring_cmd_done()` directly into the ring CQ.
-
-A loadable module cannot safely mutate the upstream kernel's private opcode dispatch table. The command selector therefore uses the supported `IORING_OP_URING_CMD` extension point while retaining the stable KinePlex selector `IORING_OP_KINEPLEX_ROUTE`. This avoids an invasive kernel fork and preserves the single SQ/CQ notification path.
-
-## FT-070 — global topology debugfs
-
-With debugfs mounted, the module creates `/sys/kernel/debug/kineplex/curvature_tensor` and `/sys/kernel/debug/kineplex/active_geodesics`. Both files use `seq_file`; each read copies the current RCU snapshot before formatting, so the read-side critical section never sleeps. `curvature_tensor` prints the revision, Q16.16 metric matrix, and a Christoffel slice; `active_geodesics` prints the current count. Module teardown removes the files, waits for readers and pending RCU callbacks, and frees the final snapshot.
+### Validação estática sem kernel headers:
+```sh
+../tests/kernel/static_validation.sh
+```

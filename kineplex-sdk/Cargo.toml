@@ -10,8 +10,17 @@ repository.workspace = true
 
 [dependencies]
 arrow.workspace = true
+arrow-array.workspace = true
+kineplex-core = { path = "../kineplex-core" }
 kineplex-sdk-macros = { path = "../kineplex-sdk-macros" }
+serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
 
 [lints]
 workspace = true

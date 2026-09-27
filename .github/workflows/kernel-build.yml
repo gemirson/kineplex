@@ -1,0 +1,76 @@
+# Build real do módulo out-of-tree e do programa XDP.
+# FT-083, FT-093, FT-094, FT-095 e FT-096.
+
+name: Kernel Module Build
+
+on:
+  push:
+    branches: [main, develop, 'feature/**']
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  kernel-build-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            kernel_line: '5.15'
+          - os: ubuntu-24.04
+            kernel_line: '6.x'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang llvm kmod linux-headers-$(uname -r)
+
+      - name: Build kernel module for runner kernel
+        run: |
+          make -C kineplex-kernel KDIR=/lib/modules/$(uname -r)/build
+
+      - name: Build XDP object
+        run: make -C tools bpf
+
+      - name: Verify module and BPF artifacts
+        run: |
+          test -f kineplex-kernel/kineplex_geo.ko
+          test -f bpf/kineplex_geo_xdp.bpf.o
+          modinfo kineplex-kernel/kineplex_geo.ko
+          file bpf/kineplex_geo_xdp.bpf.o
+          sha256sum kineplex-kernel/kineplex_geo.ko bpf/kineplex_geo_xdp.bpf.o
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kineplex-kernel-${{ matrix.kernel_line }}
+          path: |
+            kineplex-kernel/kineplex_geo.ko
+            bpf/kineplex_geo_xdp.bpf.o
+            kineplex-kernel/Module.symvers
+            kineplex-kernel/modules.order
+          if-no-files-found: error
+          retention-days: 30
+
+  kernel-compatibility-report:
+    if: always()
+    needs: kernel-build-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish matrix result
+        run: |
+          {
+            echo '# Kernel compatibility report'
+            echo
+            echo '| Matrix | Result |'
+            echo '|---|---|'
+            echo '| Ubuntu 22.04 / 5.15 line | ${{ needs.kernel-build-matrix.result }} |'
+            echo '| Ubuntu 24.04 / 6.x line | ${{ needs.kernel-build-matrix.result }} |'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "${{ needs.kernel-build-matrix.result }}" = success

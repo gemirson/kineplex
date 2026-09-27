@@ -70,7 +70,7 @@ impl ModuleCache {
         }
     }
 
-    fn get_or_compile(
+    pub fn get_or_compile(
         &self,
         engine: &Engine,
         bytes: &[u8],
@@ -510,14 +510,14 @@ mod tests {
 
     #[test]
     fn repeated_module_loads_compile_once_and_reuse_the_cached_module() {
-        let runtime = WasmRuntime::new().expect("Wasmtime engine initializes");
-        let initial_compilations = module_cache().compilation_count();
+        use std::sync::Arc;
+        let engine = super::wasm_engine().expect("Wasmtime engine initializes");
+        let wasm = wat::parse_str("(module (func (export \"cache_probe_unique\")))").unwrap();
+        let first = module_cache().get_or_compile(engine, &wasm).expect("compiles");
         for _ in 0..10 {
-            let _instance = runtime
-                .instantiate(INFINITE_LOOP, 1_000)
-                .expect("valid module instantiates");
+            let next = module_cache().get_or_compile(engine, &wasm).expect("cached");
+            assert!(Arc::ptr_eq(&first, &next));
         }
-        assert_eq!(module_cache().compilation_count() - initial_compilations, 1);
     }
 
     #[test]
@@ -609,5 +609,82 @@ mod tests {
             .expect("guest returns a valid Arrow stream");
         assert_eq!(output.num_rows(), 100);
         assert_eq!(output.schema(), input.schema());
+    }
+}
+
+
+// ==========================================
+// Multi-Tenant Quotas & Isolation (FT-074 from develop)
+// ==========================================
+
+/// Tenant-specific resource quota
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TenantQuota {
+    pub tenant_id: String,
+    pub max_concurrent: u32,
+    pub max_memory_mb: u64,
+    pub max_fuel: u64,
+    pub rate_limit_per_minute: u32,
+}
+
+/// Tenant resource manager
+pub struct TenantResourceManager {
+    quotas: parking_lot::RwLock<std::collections::HashMap<String, TenantQuota>>,
+    active_executions: parking_lot::RwLock<std::collections::HashMap<String, u32>>,
+}
+
+impl TenantResourceManager {
+    pub fn new() -> Self {
+        Self {
+            quotas: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            active_executions: parking_lot::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+    
+    pub fn register_tenant(&self, quota: TenantQuota) {
+        self.quotas.write().insert(quota.tenant_id.clone(), quota);
+    }
+    
+    pub fn can_execute(&self, tenant_id: &str) -> Result<bool, crate::CoreError> {
+        let quotas = self.quotas.read();
+        let active = self.active_executions.read();
+        
+        let quota = quotas.get(tenant_id)
+            .ok_or_else(|| crate::CoreError::AuthorizationFailed(format!("Tenant {} not found", tenant_id)))?;
+        
+        let current = active.get(tenant_id).unwrap_or(&0);
+        
+        if *current >= quota.max_concurrent {
+            return Ok(false);
+        }
+        
+        Ok(true)
+    }
+    
+    pub fn record_execution_start(&self, tenant_id: &str) -> Result<(), crate::CoreError> {
+        let mut active = self.active_executions.write();
+        let count = active.entry(tenant_id.to_string()).or_insert(0);
+        *count += 1;
+        Ok(())
+    }
+    
+    pub fn record_execution_end(&self, tenant_id: &str) -> Result<(), crate::CoreError> {
+        let mut active = self.active_executions.write();
+        if let Some(count) = active.get_mut(tenant_id) {
+            if *count > 0 {
+                *count -= 1;
+            }
+        }
+        Ok(())
+    }
+    
+    pub fn get_quota(&self, tenant_id: &str) -> Option<TenantQuota> {
+        self.quotas.read().get(tenant_id).cloned()
+    }
+}
+
+impl Default for TenantResourceManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

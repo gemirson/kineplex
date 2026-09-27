@@ -93,7 +93,7 @@ impl Receptor {
     }
 }
 
-struct CsvSource {
+pub struct CsvSource {
     reader: BufReader<File>,
     schema: SchemaRef,
     batch_rows: usize,

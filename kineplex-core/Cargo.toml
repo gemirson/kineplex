@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 arrow.workspace = true
+arrow-array.workspace = true
 arc-swap.workspace = true
 chrono.workspace = true
 petgraph.workspace = true
@@ -28,6 +29,11 @@ rcgen.workspace = true
 ring.workspace = true
 dashmap.workspace = true
 wasmtime.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

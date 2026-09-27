@@ -5,12 +5,22 @@ extern crate self as kineplex_sdk;
 pub use kineplex_sdk_macros::synapse;
 
 pub mod arrow;
+pub mod client;
 pub mod graph;
+pub mod types;
+
+pub use client::KinePlexClient;
+pub use types::{GraphConfigDto, GraphStatusResponse, GraphSubmitRequest};
+
+/// SDK version
+pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod prelude {
     pub use crate::arrow::{KineColumnExt, KineRecordBatchBuilder};
+    pub use crate::client::KinePlexClient;
     pub use crate::graph::{GraphInvariant, KineGraph, NativeOperator};
     pub use crate::synapse;
+    pub use crate::types::{GraphConfigDto, GraphStatusResponse, GraphSubmitRequest};
     pub use arrow::array::RecordBatch;
 }
 
