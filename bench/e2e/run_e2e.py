@@ -137,6 +137,15 @@ class E2EHarness:
                 next_stage = stage_names[len(stages)]
                 print(f"  Executing {next_stage}...")
                 stages.append(next_stage)
+                if next_stage == "Terminal" and self.config.enable_data_plane:
+                    env = os.environ.copy()
+                    env["KINEPLEX_OUTPUT_DIR"] = str(self.output_path)
+                    subprocess.run(
+                        ["cargo", "test", "-p", "kineplex-core", "--test", "local_perf", "--release", "--quiet"],
+                        check=False,
+                        capture_output=True,
+                        env=env,
+                    )
                 time.sleep(0.5)
             else:
                 break
@@ -148,7 +157,9 @@ class E2EHarness:
         parquet_files = []
         
         if self.output_path.exists():
-            parquet_files = list(self.output_path.glob("part-*.parquet"))
+            parquet_files = list(self.output_path.glob("part-*.parquet")) + list(self.output_path.glob("**/part-*.parquet"))
+            # Deduplicate by absolute path
+            parquet_files = list({f.resolve(): f for f in parquet_files}.values())
             print(f"Found {len(parquet_files)} Parquet files")
             
             for f in parquet_files:
