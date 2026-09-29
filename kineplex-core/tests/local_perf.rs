@@ -289,3 +289,128 @@ async fn test_local_performance_data_plane_evaluation() {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }
+
+#[tokio::test]
+async fn test_ollivier_ricci_geometric_flow_performance() {
+    use kineplex_core::geometry::{
+        AdaptiveStepController, GeoNodeId, GeometricWarmup, MetricTensorNormalizer,
+        MetricTensorSystem, Simplex2Discoverer, SyntheticSpike, WarmupError,
+    };
+
+    println!("\n================================================================================");
+    println!("     OLLIVIER-RICCI / RICCI FLOW GEOMETRIC ENGINE BENCHMARK (FT-089..FT-092)   ");
+    println!("================================================================================");
+
+    // 1. FT-089: Adaptive Step PID Controller for Ricci Flow Curvature Performance
+    println!(">>> 1. Benchmarking Adaptive Step PID Controller (Ricci Flow Step)...");
+    let mut controller = AdaptiveStepController::new(0.5);
+    let pid_iterations = 1_000_000;
+    let t0 = Instant::now();
+    for i in 0..pid_iterations {
+        // Vary curvature gradient dynamically
+        let curvature_change = ((i % 100) as f64 - 50.0) * 0.002;
+        let _ = controller.compute(curvature_change);
+    }
+    let pid_elapsed = t0.elapsed();
+    let pid_ns_per_op = (pid_elapsed.as_nanos() as f64) / (pid_iterations as f64);
+    let pid_ops_sec = (pid_iterations as f64) / pid_elapsed.as_secs_f64();
+    println!(
+        "  * PID Step: {:?} for {} iterations | {:.2} ns/op | {:.0} ops/sec (Epsilon converged to {:.4})",
+        pid_elapsed, pid_iterations, pid_ns_per_op, pid_ops_sec, controller.epsilon()
+    );
+
+    // 2. FT-090: Metric Tensor Volume Normalization & Bare-Metal Overflow Hardening
+    println!("\n>>> 2. Benchmarking Metric Tensor Volume Normalization (Overflow Prevention)...");
+    let tensor_sizes = vec![10_000, 100_000, 1_000_000];
+    for size in tensor_sizes {
+        let normalizer = MetricTensorNormalizer::new(size as f64 * 10.0);
+        let mut weights: Vec<f64> = (0..size).map(|i| (i % 256) as f64 * 1.5).collect();
+
+        let t_norm = Instant::now();
+        normalizer.normalize(&mut weights).expect("Normalization must succeed");
+        let norm_elapsed = t_norm.elapsed();
+
+        let elem_sec = (size as f64) / norm_elapsed.as_secs_f64();
+        let mb_sec = ((size * 8) as f64 / (1024.0 * 1024.0)) / norm_elapsed.as_secs_f64();
+
+        println!(
+            "  * Tensor elements: {:>9} | Time: {:>8.3} ms | Throughput: {:>10.0} elem/s ({:>8.1} MB/s) | Volume stable: {}",
+            size,
+            norm_elapsed.as_secs_f64() * 1000.0,
+            elem_sec,
+            mb_sec,
+            normalizer.is_volume_stable(&weights)
+        );
+    }
+
+    // 3. FT-091: 2-Simplex Discovery (Faces) and Betti Number (Beta 1) Homology Health
+    println!("\n>>> 3. Benchmarking 2-Simplex Discovery & Betti Number (Topological Holes)...");
+    let mut discoverer = Simplex2Discoverer::new();
+    let num_nodes = 150;
+    // Build a mesh graph with known triangles
+    for i in 0..num_nodes {
+        let a = GeoNodeId(format!("node_{}", i));
+        let b = GeoNodeId(format!("node_{}", (i + 1) % num_nodes));
+        let c = GeoNodeId(format!("node_{}", (i + 2) % num_nodes));
+        discoverer.add_edge(a.clone(), b.clone());
+        discoverer.add_edge(b, c.clone());
+        discoverer.add_edge(c, a);
+    }
+
+    let t_simplex = Instant::now();
+    let triangles = discoverer.find_triangles();
+    let betti = discoverer.betti_number();
+    let simplex_elapsed = t_simplex.elapsed();
+
+    println!(
+        "  * Mesh Topology: {} nodes, {} edges | Discovered {} triangles (2-simplices) in {:.3} ms",
+        num_nodes,
+        discoverer.count_edges(),
+        triangles.len(),
+        simplex_elapsed.as_secs_f64() * 1000.0
+    );
+    println!("  * Betti-1 Invariant (Euler-Poincaré): beta_1 = {}", betti);
+
+    // 4. FT-092: Topological Warm-up Phase
+    println!("\n>>> 4. Benchmarking Topological Warm-up Convergence (Spike Propagation)...");
+    struct FastMetricSystem {
+        variance: f64,
+        calls: u32,
+    }
+    impl MetricTensorSystem for FastMetricSystem {
+        async fn process_spike(&mut self, _spike: SyntheticSpike) -> Result<(), WarmupError> {
+            self.calls += 1;
+            // Simulate convergence after 25 spikes
+            if self.calls > 25 {
+                self.variance = 0.005;
+            } else {
+                self.variance = 0.1 / (self.calls as f64);
+            }
+            Ok(())
+        }
+        fn metric_variance(&self) -> f64 {
+            self.variance
+        }
+        fn metric_mean(&self) -> f64 {
+            1.0
+        }
+    }
+
+    let mut metric_system = FastMetricSystem { variance: 1.0, calls: 0 };
+    let mut warmup = GeometricWarmup::new()
+        .with_spikes(200)
+        .with_threshold(0.01);
+
+    let t_warmup = Instant::now();
+    let warmup_res = warmup.warmup(&mut metric_system).await.expect("Warmup should converge");
+    let warmup_elapsed = t_warmup.elapsed();
+
+    println!(
+        "  * Warmup: converged in {:.2} ms using {} synthetic spikes (Operational: {})",
+        warmup_elapsed.as_secs_f64() * 1000.0,
+        warmup_res.spikes_used,
+        warmup.is_operational()
+    );
+    println!("================================================================================\n");
+}
+
