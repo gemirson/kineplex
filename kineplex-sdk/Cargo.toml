@@ -1,0 +1,19 @@
+[package]
+name = "kineplex-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+kineplex-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Additional dependencies
+uuid = { version = "1.6", features = ["v4", "serde"] }
+reqwest = { version = "0.11", features = ["json"] }

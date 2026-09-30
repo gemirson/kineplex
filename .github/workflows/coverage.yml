@@ -1,0 +1,101 @@
+# CI de cobertura executável com threshold de 95%.
+
+name: Test Coverage
+
+on:
+  push:
+    branches: [main, develop, 'feature/**']
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust with coverage tools
+        uses: dtolnay/rust-action@stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run tests and enforce coverage gates
+        run: |
+          set -o pipefail
+          cargo llvm-cov --workspace --summary-only \
+            --fail-under-lines 95 \
+            --fail-under-functions 95 \
+            --fail-under-regions 95 \
+            | tee coverage-summary.txt
+
+      - name: Generate LCOV report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - name: Generate HTML report
+        run: cargo llvm-cov --workspace --html --output-dir coverage-html
+
+      - name: Upload coverage summary and LCOV
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage-summary.txt
+            lcov.info
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage-html
+          if-no-files-found: error
+          retention-days: 7
+
+  coverage-per-crate:
+    needs: coverage
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - kineplex-core
+          - kineplex-net
+          - kineplex-node
+          - kineplex-sdk
+          - kineplex-sdk-macros
+          - kineplex-cli
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust with coverage tools
+        uses: dtolnay/rust-action@stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate crate coverage summary
+        run: cargo llvm-cov -p ${{ matrix.crate }} --summary-only | tee crate-coverage.txt
+
+      - name: Upload crate coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.crate }}
+          path: crate-coverage.txt
+          if-no-files-found: error
+          retention-days: 7
