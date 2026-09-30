@@ -6,6 +6,7 @@
 #include <linux/numa.h>
 #include <linux/pagemap.h>
 #include <linux/slab.h>
+#include <linux/version.h>
 
 #include "kineplex_geo_internal.h"
 
@@ -121,7 +122,11 @@ int kineplex_geo_numa_mmap(struct kineplex_geo_context *ctx,
 		return -EINVAL;
 
 	/* The page was allocated with __GFP_THISNODE; never remap another page. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+#else
 	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+#endif
 	ret = remap_pfn_range(vma,
 			      vma->vm_start,
 			      page_to_pfn(ctx->tensor_page),

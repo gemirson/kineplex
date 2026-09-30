@@ -45,7 +45,12 @@ cc -std=c11 -Wall -Wextra -Werror \
     -o "$TMP/capability_smoke"
 
 if command -v clang >/dev/null 2>&1; then
+    EXTRA_INC=""
+    if [ -d "/usr/include/x86_64-linux-gnu" ]; then
+        EXTRA_INC="-I/usr/include/x86_64-linux-gnu"
+    fi
     clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
+        $EXTRA_INC \
         -I"$ROOT/bpf" \
         -c "$ROOT/bpf/kineplex_geo_xdp.bpf.c" \
         -o "$TMP/kineplex_geo_xdp.bpf.o"

@@ -24,6 +24,7 @@ static dev_t kineplex_geo_dev;
 static struct cdev kineplex_geo_cdev;
 static struct class *kineplex_geo_class;
 static struct device *kineplex_geo_device;
+static struct net_device *kineplex_geo_netdev;
 
 static int kineplex_geo_open(struct inode *inode, struct file *file)
 {
@@ -167,6 +168,7 @@ static int __init kineplex_geo_init(void)
 		goto err_class;
 	}
 
+	kineplex_geo_netdev = nic;
 	pr_info("kineplex_geo: loaded on %s, NUMA node %d\n",
 		nic_ifname, kineplex_geo_ctx.numa_node);
 	return 0;
@@ -187,16 +189,14 @@ err_numa:
 
 static void __exit kineplex_geo_exit(void)
 {
-	struct device *nic = kineplex_geo_ctx.nic_device;
-
 	device_destroy(kineplex_geo_class, kineplex_geo_dev);
 	class_destroy(kineplex_geo_class);
 	cdev_del(&kineplex_geo_cdev);
 	unregister_chrdev_region(kineplex_geo_dev, 1);
 	kineplex_geo_telemetry_destroy();
 	kineplex_geo_numa_destroy(&kineplex_geo_ctx);
-	if (nic)
-		dev_put(nic);
+	if (kineplex_geo_netdev)
+		dev_put(kineplex_geo_netdev);
 	pr_info("kineplex_geo: unloaded\n");
 }
 
