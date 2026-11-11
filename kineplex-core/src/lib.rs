@@ -17,6 +17,7 @@ pub mod error;
 pub mod geometry;
 pub mod coalesce;
 pub mod laguerre;
+pub mod kinetxt;
 
 pub use error::{CoreError, Result};
 

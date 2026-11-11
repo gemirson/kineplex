@@ -15,6 +15,9 @@ anyhow.workspace = true
 tracing.workspace = true
 arrow.workspace = true
 arrow-array.workspace = true
+arrow-buffer = "46.0"
+arrow-schema = "46.0"
+memchr = "2.7"
 rayon = "1.8"
 parquet.workspace = true
 wasmtime.workspace = true
@@ -27,3 +30,7 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono.workspace = true
 parking_lot = "0.12"
 once_cell = "1.19"
+
+[[bench]]
+name = "kinetxt_bench"
+harness = false
