@@ -86,7 +86,7 @@ pub fn extract_fields_single_pass<'a>(
         return;
     }
 
-    // Caminho com aspas usando Quote-Masking em GF(2)
+    // Caminho com aspas usando Quote-Masking em GF(2) acelerado por hardware
     let mut col = 0;
     let mut field_start = 0;
     let mut in_quotes = false;
@@ -94,23 +94,12 @@ pub fn extract_fields_single_pass<'a>(
     let chunks_64 = line.len() / 64;
     for c in 0..chunks_64 {
         let base = c * 64;
-        let block = &line[base..base + 64];
+        let block: &[u8; 64] = line[base..base + 64].try_into().unwrap();
+        let prev_in_quote = if in_quotes { !0u64 } else { 0u64 };
+        let mask_res = crate::simd::compute_quote_mask_dispatch(block, delim, prev_in_quote);
+        in_quotes = mask_res.next_prev_in_quote != 0;
 
-        let mut raw_quotes: u64 = 0;
-        let mut raw_delims: u64 = 0;
-
-        for (i, &b) in block.iter().enumerate().take(64) {
-            if b == b'"' {
-                raw_quotes |= 1u64 << i;
-            } else if b == delim {
-                raw_delims |= 1u64 << i;
-            }
-        }
-
-        let (quote_mask, next_in_quotes) = compute_quote_mask_64(raw_quotes, in_quotes);
-        in_quotes = next_in_quotes;
-
-        let mut valid_delims = raw_delims & !quote_mask;
+        let mut valid_delims = mask_res.valid_delimiters_mask;
 
         while valid_delims != 0 {
             let bit_pos = valid_delims.trailing_zeros() as usize;
@@ -192,24 +181,12 @@ impl DelimitedSimdScanner {
         let chunks_64 = raw_txt.len() / 64;
         for c in 0..chunks_64 {
             let base = c * 64;
-            let block = &raw_txt[base..base + 64];
+            let block: &[u8; 64] = raw_txt[base..base + 64].try_into().unwrap();
+            let prev_in_quote = if in_quotes { !0u64 } else { 0u64 };
+            let mask_res = crate::simd::compute_quote_mask_dispatch(block, b'\n', prev_in_quote);
+            in_quotes = mask_res.next_prev_in_quote != 0;
 
-            let mut raw_quotes: u64 = 0;
-            let mut raw_newlines: u64 = 0;
-
-            for (i, &b) in block.iter().enumerate().take(64) {
-                if b == b'"' {
-                    raw_quotes |= 1u64 << i;
-                } else if b == b'\n' {
-                    raw_newlines |= 1u64 << i;
-                }
-            }
-
-            let (quote_mask, next_in_quotes) = compute_quote_mask_64(raw_quotes, in_quotes);
-            in_quotes = next_in_quotes;
-
-            // Filtra quebras de linha válidas eliminando quebras dentro de aspas
-            let mut valid_newlines = raw_newlines & !quote_mask;
+            let mut valid_newlines = mask_res.valid_delimiters_mask | mask_res.valid_newlines_mask;
 
             while valid_newlines != 0 {
                 let bit_pos = valid_newlines.trailing_zeros() as usize;

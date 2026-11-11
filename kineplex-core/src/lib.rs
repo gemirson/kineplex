@@ -18,6 +18,9 @@ pub mod geometry;
 pub mod coalesce;
 pub mod laguerre;
 pub mod kinetxt;
+pub mod cbo;
+pub mod lakehouse;
+pub mod simd;
 
 pub use error::{CoreError, Result};
 
