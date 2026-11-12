@@ -9,6 +9,7 @@ members = [
     "kineplex-sdk-macros",
     "kineplex-cli",
     "kineplex-server",
+    "bench/tpch",
 ]
 
 [workspace.package]

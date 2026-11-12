@@ -21,7 +21,9 @@ target
 #.idea/
 
 
-# Kernel/BPF build outputs
+# Reports & Benchmarks
+/reports/
+
 *.ko
 *.mod
 *.mod.c

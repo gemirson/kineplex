@@ -1651,6 +1651,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "kineplex-bench"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "arrow-array",
+ "chrono",
+ "clap",
+ "kineplex-core",
+ "kineplex-df",
+ "parquet",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "kineplex-cli"
 version = "0.2.0"
 dependencies = [
