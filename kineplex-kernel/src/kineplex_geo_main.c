@@ -111,8 +111,16 @@ static const struct file_operations kineplex_geo_fops = {
 #if IS_ENABLED(CONFIG_IO_URING)
 	.uring_cmd = kineplex_geo_uring_cmd,
 #endif
-	.llseek = no_llseek,
+	.llseek = noop_llseek,
 };
+
+static char *kineplex_geo_devnode(const struct device *dev, umode_t *mode)
+{
+	(void)dev;
+	if (mode)
+		*mode = 0666;
+	return NULL;
+}
 
 static int __init kineplex_geo_init(void)
 {
@@ -158,6 +166,7 @@ static int __init kineplex_geo_init(void)
 		kineplex_geo_class = NULL;
 		goto err_cdev;
 	}
+	kineplex_geo_class->devnode = kineplex_geo_devnode;
 
 	kineplex_geo_device = device_create(kineplex_geo_class, NULL,
 					    kineplex_geo_dev, NULL,

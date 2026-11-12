@@ -26,6 +26,8 @@ int kineplex_geo_numa_init(struct kineplex_geo_context *ctx,
 	/* dev_to_node is the source of truth for the NIC's physical locality. */
 	node = dev_to_node(nic_device);
 	if (!kineplex_geo_valid_node(node))
+		node = first_online_node;
+	if (!kineplex_geo_valid_node(node))
 		return -ENODEV;
 
 	ctx->nic_device = nic_device;

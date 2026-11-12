@@ -4,6 +4,7 @@
 //! - Receptor -> Wasm -> Aggregation -> Terminal
 
 use kineplex_core::{Result, CoreError, Graph, GraphId, GraphStatus, Stage, ExecutionResult, ExecutionMetrics};
+use kineplex_core::job_registry::JobMetricsRegistry;
 use crate::{NodeId, ClusterManager};
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -14,6 +15,8 @@ use tokio::sync::RwLock;
 pub struct PipelineExecutor {
     _cluster: Arc<ClusterManager>,
     running_executions: RwLock<HashMap<GraphId, ExecutionState>>,
+    /// Per-job counters/timers (Metrics Budget Controller, Fase 5).
+    job_registry: Arc<JobMetricsRegistry>,
 }
 
 /// State of a running execution
@@ -31,7 +34,13 @@ impl PipelineExecutor {
         Self {
             _cluster: cluster,
             running_executions: RwLock::new(HashMap::new()),
+            job_registry: Arc::new(JobMetricsRegistry::new()),
         }
+    }
+
+    /// Shared registry of per-job metrics (exported on `/metrics`).
+    pub fn job_registry(&self) -> Arc<JobMetricsRegistry> {
+        self.job_registry.clone()
     }
     
     /// Execute a graph through the pipeline
@@ -39,6 +48,11 @@ impl PipelineExecutor {
         let graph_id = graph.id.clone();
         let start_time = Instant::now();
         let mut stage_times: HashMap<String, u64> = HashMap::new();
+
+        // Metrics Budget Controller: bind a job for this execution.
+        let stage_names: Vec<String> = graph.stages.iter().map(|s| format!("{:?}", s)).collect();
+        let stage_refs: Vec<&str> = stage_names.iter().map(|s| s.as_str()).collect();
+        let job = self.job_registry.begin_job(graph_id.0.to_string(), &stage_refs);
         
         // Initialize execution state
         let execution_state = ExecutionState {
@@ -52,17 +66,33 @@ impl PipelineExecutor {
         self.running_executions.write().await.insert(graph_id.clone(), execution_state);
         
         // Execute each stage
+        let mut stage_error = None;
         for (stage_idx, stage) in graph.stages.iter().enumerate() {
             let stage_start = Instant::now();
             let stage_name = format!("{:?}", stage);
-            
-            // Execute the stage
-            self.execute_stage(&graph_id, stage, stage_idx).await?;
-            
+
+            // Bind job to this thread at stage start (task may migrate threads);
+            // the timer feeds the registry counters/sketch on drop.
+            let scope = job.scope();
+            {
+                let _timer = scope.stage(stage_idx);
+                if let Err(e) = self.execute_stage(&graph_id, stage, stage_idx).await {
+                    stage_error = Some(e);
+                    break;
+                }
+            }
+            drop(scope);
+
             let stage_elapsed = stage_start.elapsed().as_millis() as u64;
             stage_times.insert(stage_name, stage_elapsed);
         }
-        
+
+        self.job_registry.end_job(&graph_id.0.to_string());
+        if let Some(e) = stage_error {
+            self.running_executions.write().await.remove(&graph_id);
+            return Err(e);
+        }
+
         let total_time = start_time.elapsed().as_millis() as u64;
         
         // Clean up execution state

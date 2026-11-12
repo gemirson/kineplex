@@ -21,11 +21,41 @@ target
 #.idea/
 
 
-# Kernel/BPF build outputs
+# Reports & Benchmarks
+/reports/
+
 *.ko
 *.mod
 *.mod.c
 *.mod.o
+*.o
+.*.cmd
+**/*.o
+**/*.cmd
 Module.symvers
 modules.order
 bpf/*.o
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Research paper & LaTeX sources (private/protected)
+docs/artigo_synapse_ollivier_ricci*
+docs/paper/
+latex/
+*.tex
+*.bib
+*.aux
+*.bbl
+*.blg
+*.out
+*.synctex.gz
+
+# OS / Editor
+.DS_Store
+*.swp
+*~
+
+

@@ -16,3 +16,18 @@ anyhow.workspace = true
 parking_lot.workspace = true
 uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono.workspace = true
+bytemuck = { version = "1.14", features = ["derive"] }
+quinn-proto = "0.10"
+io-uring = "0.6"
+libc = "0.2"
+
+[dev-dependencies]
+arrow-array = "46.0"
+arrow-schema = "46.0"
+object_store = "0.7"
+
+[[bench]]
+name = "quic_bench"
+harness = false
+
+

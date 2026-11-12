@@ -86,3 +86,59 @@ e2e_report:
   retry_count: 0
   allocation_failures: 0
 ```
+
+## Metrics Budget Controller (FT-038) — método
+
+Métricas por job com **overhead ≤ 1% de CPU por job** (`OVERHEAD_BUDGET = 0.01`),
+implementado em `kineplex-core` (`job_metrics.rs`, `job_registry.rs`, `budget.rs`).
+
+### Método matemático
+
+1. **Caminho quente (monoide + sketches)**
+   - `JobCounters` (`#[repr(align(64))]`) com `AtomicU64`/`Ordering::Relaxed` — sem
+     lock, sem alloc, sem `format!`. Handle thread-local do job corrente →
+     `record_rows`/`record_event` = 1 `fetch_add`.
+   - Distribuições online: **Welford** (média/variação) e **DDSketch α = 1%**
+     (erro relativo ≤ 1% no p95). `trait Merge` com leis testadas
+     (associatividade, identidade, comutatividade).
+   - Perdas permitidas (lossy) em eventos de alta taxa; contagem em
+     `stage_drops` — o job nunca bloqueia.
+
+2. **Controlador PI de overhead** (`BudgetController`, filosofia do PID FT-089)
+   - Amostra o custo real da observação (`measure_cost_ns` ao redor da escrita)
+     e calcula `overhead_ratio = custo_amortizado / janela_decorrida`.
+   - PI com anti-windup: `p ← clamp(p + kp·e + ki·Σe, p_min, 1.0)`, `e = budget − ratio`,
+     ganhos `kp = 0.5`, `ki = 0.2`, `p_min = 0.01`, Q16.16 atômico.
+   - `p` é a **taxa de amostragem** lida no caminho quente (relaxed load);
+     contadores/timers de job seguem 100%, amostragem só para eventos de alta taxa.
+   - Gauges no `/metrics`: `kineplex_metrics_overhead_ratio`,
+     `kineplex_metrics_sample_rate`.
+
+3. **Loop real no scrape** — `GET /metrics` (`kineplex-server/src/handlers.rs`)
+   mede o próprio custo de observação (concat de exporters + formatação) e chama
+   `AppState::tick_metrics_budget(cost_ns)` → `BudgetController::tick` no fim de
+   cada scrape. Exportação de jobs com **cache de 1 s** (DoD FT-038).
+
+4. **Instrumentação E2E**
+   - `execute_real_pipeline` (server): `begin_job(graph_id)` → timers por estágio
+     → `rows_processed` real do snapshot (removido o `500_000` fixo) → `end_job`.
+   - `PipelineExecutor::execute` (node): registry interno + `JobScope` por estágio
+     (re-criado no início de cada estágio — seguro contra task tokio migratória);
+     `end_job` garantido mesmo em erro.
+
+### Tabela de overhead medida
+
+Teste `metrics_overhead_on_off_within_budget` (`kineplex-core/tests/local_perf.rs`),
+pares intercalados ON/OFF (10 reps × 2M linhas), **mediana de cada braço**
+(robusta a jitter de ±ms do scheduler em debug e à contenção de testes irmãos):
+
+| Custo | Medido |
+|---|---|
+| Job instrumentado completo (begin + 4 estágios + end) | **~4 µs** |
+| Overhead mediano ON vs OFF | **≤ 1.00%** em todas as execuções (típico ~0.45%) |
+| Orçamento (`OVERHEAD_BUDGET`) | **1.00%** — ✅ atendido |
+
+Evidência: execuções isoladas 0.44% / 0.04% / 0.24% / 0.73% / 0.52%;
+suite completa (`cargo test --workspace`, 3 testes de `local_perf` em paralelo)
+3× consecutivas verdes. Jitter por rep de até ±2 ms é absorvido pela mediana
+dos braços interleaved (contenção atinge OFF e ON igualmente).

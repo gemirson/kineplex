@@ -2,15 +2,18 @@
 resolver = "2"
 members = [
     "kineplex-core",
+    "kineplex-df",
     "kineplex-net",
     "kineplex-node",
     "kineplex-sdk",
     "kineplex-sdk-macros",
     "kineplex-cli",
+    "kineplex-server",
+    "bench/tpch",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["KinePlex Team"]
 license = "MIT"
@@ -31,20 +34,23 @@ debug = true
 
 [workspace.dependencies]
 # Core
-kineplex-core = { path = "kineplex-core", version = "0.1.0" }
+kineplex-core = { path = "kineplex-core", version = "0.2.0" }
+
+# Columnar DataFrame / SQL engine
+kineplex-df = { path = "kineplex-df", version = "0.2.0" }
 
 # Networking
-kineplex-net = { path = "kineplex-net", version = "0.1.0" }
+kineplex-net = { path = "kineplex-net", version = "0.2.0" }
 
 # Node
-kineplex-node = { path = "kineplex-node", version = "0.1.0" }
+kineplex-node = { path = "kineplex-node", version = "0.2.0" }
 
 # SDK
-kineplex-sdk = { path = "kineplex-sdk", version = "0.1.0" }
-kineplex-sdk-macros = { path = "kineplex-sdk-macros", version = "0.1.0" }
+kineplex-sdk = { path = "kineplex-sdk", version = "0.2.0" }
+kineplex-sdk-macros = { path = "kineplex-sdk-macros", version = "0.2.0" }
 
 # CLI
-kineplex-cli = { path = "kineplex-cli", version = "0.1.0" }
+kineplex-cli = { path = "kineplex-cli", version = "0.2.0" }
 
 # External dependencies
 tokio = { version = "1.35", features = ["full"] }
@@ -59,6 +65,8 @@ tracing-subscriber = "0.3"
 chrono = { version = "=0.4.31", features = ["serde"] }
 arrow = { version = "46.0", features = ["ipc"] }
 arrow-array = "46.0"
-parquet = "46.0"
+parquet = { version = "46.0", features = ["async"] }
 parking_lot = "0.12"
 wasmtime = "17.0"
+object_store = "0.7"
+bytemuck = "1.14"

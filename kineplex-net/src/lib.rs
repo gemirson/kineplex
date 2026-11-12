@@ -8,6 +8,7 @@
 pub mod gossip;
 pub mod routing;
 pub mod protocol;
+pub mod quic;
 
 pub use gossip::{GossipProtocol, NodeInfo, MembershipEvent};
 pub use routing::Router;

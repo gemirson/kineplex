@@ -1,0 +1,102 @@
+name: Post-Banach Performance & Topological Evaluation
+
+on:
+  push:
+    branches: [main, develop, 'perf/**', 'feature/**']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-cpu=native"
+
+jobs:
+  post-banach-perf:
+    name: Post-Banach Topological Performance & BTEA Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          toolchain: stable
+
+      - name: Rust Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-perf-
+
+      - name: Run Post-Banach Topological Tests (Release)
+        run: |
+          cargo test -p kineplex-df --test post_banach_perf --release -- --nocapture
+
+      - name: Run Post-Banach Benchmark Harness & Silo Unification Comparison
+        run: |
+          mkdir -p target/perf-reports
+          cargo run -p kineplex-df --bin post_banach_bench --release -- \
+            --frames 50 \
+            --json target/perf-reports/benchmark_silos_metrics.json \
+            --markdown target/perf-reports/post-banach-summary.md \
+            --silos-markdown target/perf-reports/benchmark_unificacao_silos_vs_kineplex.md
+
+      - name: Publish Performance & Silos Report to GitHub Step Summary
+        if: always()
+        run: |
+          if [ -f target/perf-reports/post-banach-summary.md ]; then
+            cat target/perf-reports/post-banach-summary.md >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f target/perf-reports/benchmark_unificacao_silos_vs_kineplex.md ]; then
+            echo -e "\n---\n" >> $GITHUB_STEP_SUMMARY
+            cat target/perf-reports/benchmark_unificacao_silos_vs_kineplex.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Verify Performance Regression Gate
+        run: |
+          METRICS_FILE="target/perf-reports/benchmark_silos_metrics.json"
+          if [ ! -f "$METRICS_FILE" ]; then
+            echo "❌ Arquivo de telemetria não encontrado: $METRICS_FILE"
+            exit 1
+          fi
+
+          echo "Validando portão estrito de regressão pós-Banach..."
+          GATE_PASSED=$(jq -r '.gate_passed' "$METRICS_FILE")
+          BTEA_SCORE=$(jq -r '.btea_score' "$METRICS_FILE")
+          PRUNING_RATIO=$(jq -r '.topological_pruning.pruning_ratio_percent' "$METRICS_FILE")
+          ALLOCS=$(jq -r '.allocations_in_hot_loop' "$METRICS_FILE")
+          P95_MS=$(jq -r '.latency.p95_ms' "$METRICS_FILE")
+
+          echo "================================================="
+          echo "BTEA Composite Score: $BTEA_SCORE (Threshold: >= 100.0)"
+          echo "VP-Tree Pruning Ratio: $PRUNING_RATIO% (Threshold: >= 70.0%)"
+          echo "Tail Latency p95: $P95_MS ms (Threshold: <= 10.0 ms)"
+          echo "Heap Allocations in Hot Loop: $ALLOCS (Threshold: == 0)"
+          echo "Gate Passed Status: $GATE_PASSED"
+          echo "================================================="
+
+          if [ "$GATE_PASSED" != "true" ]; then
+            echo "❌ FALHA: O portão de performance pós-Banach foi violado!"
+            exit 1
+          fi
+
+          echo "✅ SUCESSO: Todos os requisitos de performance e zero-alocação foram atendidos!"
+
+      - name: Upload Post-Banach Telemetry Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: post-banach-perf-report
+          path: target/perf-reports/
+          if-no-files-found: error
+          retention-days: 90

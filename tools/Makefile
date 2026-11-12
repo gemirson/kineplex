@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 
 CLANG ?= clang
-CC ?= cc
-BPF_CFLAGS ?= -O2 -g -target bpf -D__TARGET_ARCH_x86
+ARCH_INC := $(shell [ -d /usr/include/x86_64-linux-gnu ] && echo "-I/usr/include/x86_64-linux-gnu")
+BPF_CFLAGS ?= -O2 -g -target bpf -D__TARGET_ARCH_x86 $(ARCH_INC)
 UAPI_INC := -I../kineplex-kernel/include/uapi
 
 .PHONY: all bpf loader clean

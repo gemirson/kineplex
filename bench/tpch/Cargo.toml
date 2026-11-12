@@ -1,0 +1,43 @@
+[package]
+name = "kineplex-bench"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Canonical TPC-H and TPC-DS benchmarking harness and scientific evaluation engine for KinePlex"
+
+[lib]
+name = "kineplex_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tpch_datagen"
+path = "src/bin/tpch_datagen.rs"
+
+[[bin]]
+name = "tpch_runner"
+path = "src/bin/tpch_runner.rs"
+
+[[bin]]
+name = "comparative_runner"
+path = "src/bin/comparative_runner.rs"
+
+[[bin]]
+name = "generate_whitepaper"
+path = "src/bin/generate_whitepaper.rs"
+
+[dependencies]
+kineplex-core.workspace = true
+kineplex-df.workspace = true
+arrow.workspace = true
+arrow-array.workspace = true
+parquet.workspace = true
+rayon = "1.8"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+clap = { version = "4.4", features = ["derive"] }
+uuid.workspace = true

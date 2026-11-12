@@ -290,6 +290,109 @@ async fn test_local_performance_data_plane_evaluation() {
     }
 }
 
+/// Synthetic workload mirroring the real Fase 5 integration pattern:
+/// `begin_job` once → 4 stage timers → `record_rows` per stage → `end_job`.
+/// Non-instrumented arm runs the identical compute (plan: on/off delta ≤ 1%).
+fn run_workload(events: u64, instrumented: bool) -> std::time::Duration {
+    let registry = Arc::new(kineplex_core::job_registry::JobMetricsRegistry::new());
+    let job = if instrumented {
+        Some(registry.begin_job("overhead-bench", &["receptor", "wasm", "agg", "terminal"]))
+    } else {
+        None
+    };
+    let scope = job.as_ref().map(|j| j.scope());
+
+    let t0 = Instant::now();
+    let mut acc = 0.0f64;
+    let chunk = events / 4;
+    let mut next_boundary = chunk;
+    for i in 0..events {
+        // Simulated per-row compute (comparable to Arrow row processing).
+        acc += (i as f64).sqrt() * 0.5;
+
+        // Stage boundary every quarter of the work. The branch is taken in
+        // BOTH arms so the loop body is identical (only the record differs).
+        if i == next_boundary {
+            next_boundary += chunk;
+            if let Some(scope) = &scope {
+                let _timer = scope.stage(((i / chunk) - 1) as usize);
+                kineplex_core::job_metrics::record_rows(chunk);
+            }
+        }
+    }
+    // Keep the accumulator observable so it cannot be optimized away.
+    std::hint::black_box(acc);
+    let elapsed = t0.elapsed();
+
+    if let (Some(scope), Some(job)) = (scope, job) {
+        drop(scope);
+        registry.end_job("overhead-bench");
+        drop(job);
+    }
+    elapsed
+}
+
+#[test]
+fn metrics_overhead_on_off_within_budget() {
+    // Absolute cost of one instrumented job (begin + 4 stages + end).
+    let registry = Arc::new(kineplex_core::job_registry::JobMetricsRegistry::new());
+    let reps = 1_000u32;
+    let t0 = Instant::now();
+    for _ in 0..reps {
+        let job = registry.begin_job("cost-probe", &["a", "b", "c", "d"]);
+        let scope = job.scope();
+        for s in 0..4 {
+            let _timer = scope.stage(s);
+        }
+        drop(scope);
+        registry.end_job("cost-probe");
+    }
+    let per_job_ns = t0.elapsed().as_nanos() as u64 / reps as u64;
+    println!("[cost-probe] instrumented job = {per_job_ns} ns");
+
+    // Paired interleaved runs: each OFF is immediately followed by an ON under
+    // the same machine conditions. Per-rep jitter (±ms in debug builds, worse
+    // when sibling tests contend for CPU) hits both arms alike, so we compare
+    // the *medians* of each arm — a spike in one rep doesn't skew the ratio.
+    const EVENTS: u64 = 2_000_000;
+    const REPS: usize = 10;
+
+    // Warmup (caches, allocator).
+    let _ = run_workload(50_000, false);
+    let _ = run_workload(50_000, true);
+
+    let mut offs: Vec<std::time::Duration> = Vec::with_capacity(REPS);
+    let mut ons: Vec<std::time::Duration> = Vec::with_capacity(REPS);
+    for r in 0..REPS {
+        let off = run_workload(EVENTS, false);
+        let on = run_workload(EVENTS, true);
+        println!("[rep {r}] off={off:?} on={on:?} delta={:?}", on.saturating_sub(off));
+        offs.push(off);
+        ons.push(on);
+    }
+
+    fn median(xs: &mut [std::time::Duration]) -> std::time::Duration {
+        xs.sort();
+        xs[xs.len() / 2]
+    }
+    let off_med = median(&mut offs);
+    let on_med = median(&mut ons);
+    let overhead_ratio = (on_med.as_secs_f64() - off_med.as_secs_f64()) / off_med.as_secs_f64();
+    println!(
+        "\n[overhead] median_off={off_med:?} median_on={on_med:?} ratio={:.4}% (budget=1.00%)",
+        overhead_ratio * 100.0
+    );
+
+    // Noise floor: a negative delta means the instrumented arm was faster —
+    // clamp to 0 so the assertion measures real overhead only.
+    let clamped = overhead_ratio.max(0.0);
+    assert!(
+        clamped <= kineplex_core::job_metrics::OVERHEAD_BUDGET,
+        "metrics overhead {clamped:.4} exceeds budget {:.4}",
+        kineplex_core::job_metrics::OVERHEAD_BUDGET
+    );
+}
+
 #[tokio::test]
 async fn test_ollivier_ricci_geometric_flow_performance() {
     use kineplex_core::geometry::{

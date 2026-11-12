@@ -129,3 +129,14 @@ Para FT-081, os critérios são:
 - [ ] Scripts de execução prontos
 - [ ] Relatório versionado por execução
 - [ ] Variabilidade reportada (p50/p95/range)
+
+---
+
+## 6. Suíte Canônica TPC-H / TPC-DS e Whitepaper Científico (FT-101)
+
+A especificação FT-101 formaliza a suíte comparativa automatizada oficial do KinePlex (`bench/tpch` / `kineplex-bench`) contra DuckDB e Apache Spark:
+
+- **Código-fonte e CLI**: `bench/tpch/` (`tpch_datagen`, `tpch_runner`, `comparative_runner`, `generate_whitepaper`)
+- **Escalas Analíticas**: SF=1 (~1GB para CI e testes locais), SF=1000 (1TB) e SF=10000 (10TB)
+- **Whitepaper Científico Publicado**: [`docs/whitepaper/kineplex_analytical_superiority.md`](whitepaper/kineplex_analytical_superiority.md)
+- **Especificação Formal**: [`specs/005-tpch-tpcds-benchmarks/spec.md`](../specs/005-tpch-tpcds-benchmarks/spec.md)

@@ -61,59 +61,46 @@ impl Metric {
     }
 }
 
-/// Metrics collector
+/// Metrics collector.
+///
+/// Design (plan Fase 3): **no per-event `Vec` push** — the old implementation
+/// pushed a `Metric` (with `String` key formatting) on every `inc_counter`,
+/// growing without bound. State lives in keyed maps updated in place; the
+/// Prometheus export renders from those maps (the job registry owns the 1 s
+/// scrape cache, see `job_registry::JobMetricsRegistry`).
 pub struct MetricsCollector {
-    metrics: RwLock<Vec<Metric>>,
     counters: RwLock<HashMap<String, u64>>,
     gauges: RwLock<HashMap<String, f64>>,
+    /// Last observed histogram value per key (no history — bounded memory).
+    histograms: RwLock<HashMap<String, f64>>,
 }
 
 impl MetricsCollector {
     pub fn new() -> Self {
         Self {
-            metrics: RwLock::new(Vec::new()),
             counters: RwLock::new(HashMap::new()),
             gauges: RwLock::new(HashMap::new()),
+            histograms: RwLock::new(HashMap::new()),
         }
     }
     
-    /// Record a counter increment
+    /// Record a counter increment (map update only — no per-event `Vec` growth).
     pub fn inc_counter(&self, name: &str, labels: Option<HashMap<String, String>>) {
         let key = Self::make_key(name, &labels);
         let mut counters = self.counters.write();
         *counters.entry(key).or_insert(0) += 1;
-        
-        let metric = Metric::counter(name, *counters.get(&Self::make_key(name, &labels)).unwrap_or(&1))
-            .with_label("total", "true");
-        self.metrics.write().push(metric);
     }
     
     /// Record a gauge value
     pub fn set_gauge(&self, name: &str, value: f64, labels: Option<HashMap<String, String>>) {
         let key = Self::make_key(name, &labels);
-        let mut gauges = self.gauges.write();
-        gauges.insert(key, value);
-        
-        let metric = Metric::gauge(name, value);
-        let mut metric = metric;
-        if let Some(l) = labels {
-            for (k, v) in l {
-                metric = metric.with_label(k, v);
-            }
-        }
-        self.metrics.write().push(metric);
+        self.gauges.write().insert(key, value);
     }
     
-    /// Record a histogram value
+    /// Record a histogram value (keeps only the latest sample per key).
     pub fn observe_histogram(&self, name: &str, value: f64, labels: Option<HashMap<String, String>>) {
-        let metric = Metric::histogram(name, value);
-        let mut metric = metric;
-        if let Some(l) = labels {
-            for (k, v) in l {
-                metric = metric.with_label(k, v);
-            }
-        }
-        self.metrics.write().push(metric);
+        let key = Self::make_key(name, &labels);
+        self.histograms.write().insert(key, value);
     }
     
     fn make_key(name: &str, labels: &Option<HashMap<String, String>>) -> String {
@@ -140,24 +127,44 @@ impl MetricsCollector {
         for (key, value) in counters.iter() {
             output.push_str(&format!("{} {}\n", key, value));
         }
+        drop(counters);
         
         // Export gauges
         let gauges = self.gauges.read();
         for (key, value) in gauges.iter() {
             output.push_str(&format!("{} {}\n", key, value));
         }
+        drop(gauges);
+        
+        // Export latest histogram samples
+        let histograms = self.histograms.read();
+        for (key, value) in histograms.iter() {
+            output.push_str(&format!("{} {}\n", key, value));
+        }
         
         output
     }
     
-    /// Get all metrics
+    /// Get all metrics, derived from the keyed maps (bounded — no event log).
     pub fn get_metrics(&self) -> Vec<Metric> {
-        self.metrics.read().clone()
+        let mut out = Vec::new();
+        for (key, value) in self.counters.read().iter() {
+            out.push(Metric::counter(key, *value).with_label("total", "true"));
+        }
+        for (key, value) in self.gauges.read().iter() {
+            out.push(Metric::gauge(key, *value));
+        }
+        for (key, value) in self.histograms.read().iter() {
+            out.push(Metric::histogram(key, *value));
+        }
+        out
     }
     
     /// Clear metrics
     pub fn clear(&self) {
-        self.metrics.write().clear();
+        self.counters.write().clear();
+        self.gauges.write().clear();
+        self.histograms.write().clear();
     }
 }
 
@@ -340,7 +347,8 @@ mod coverage_tests {
         collector.set_gauge("load", 0.5, Some(labels.clone()));
         collector.observe_histogram("latency", 12.0, Some(labels));
         assert!(collector.export_prometheus().contains("requests"));
-        assert_eq!(collector.get_metrics().len(), 4);
+        // Derived from keyed maps: 1 counter + 1 gauge + 1 histogram (no per-event log).
+        assert_eq!(collector.get_metrics().len(), 3);
         collector.clear();
         assert!(collector.get_metrics().is_empty());
     }

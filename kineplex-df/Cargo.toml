@@ -1,0 +1,14 @@
+[package]
+name = "kineplex-df"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "KinePlex columnar DataFrame + Spark-SQL-style engine (SQL DSL, Catalyst pipeline, B3/BACEN O(1) kernel)"
+
+[lib]
+name = "kineplex_df"
+path = "src/lib.rs"
+
+# Zero external dependencies by design: std-only, columnar, hardware-sympathetic.
+[dependencies]
